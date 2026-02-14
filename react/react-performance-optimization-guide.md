@@ -2140,33 +2140,557 @@ const StockTicker = ({ symbol }) => {
 
 ### Common Interview Questions & Answers
 
-**Q: When would you use React.memo vs useMemo vs useCallback?**
+#### Q1: When would you use React.memo vs useMemo vs useCallback?
 
-A: "React.memo is for preventing component re-renders when props haven't changed. useMemo is for memoizing expensive calculations within a component. useCallback is for memoizing function references, typically passed as props to child components. The key is that useCallback returns the function itself, while useMemo returns the result of calling the function."
+**Expected Answer**: "React.memo is for preventing component re-renders when props haven't changed. useMemo is for memoizing expensive calculations within a component. useCallback is for memoizing function references, typically passed as props to child components."
 
-**Q: How do you decide what to code split?**
+**Detailed Explanation**:
+- **React.memo**: HOC that prevents re-renders if props are identical
+  - Best for: Child components that render expensive UI
+  - Cost: Prop comparison overhead
+  - Example: List item components that receive large objects
 
-A: "I follow this priority: First, route-based splitting for different pages. Second, split heavy libraries like charts or rich text editors. Third, split features behind authentication or user permissions. Fourth, split rarely-used features like admin panels or advanced settings. I always measure with webpack-bundle-analyzer to verify the impact."
+- **useMemo**: Hook that caches computed values
+  - Best for: Expensive computations (filtering, sorting, calculations)
+  - Cost: Memory + comparison overhead
+  - Example: Processed data, derived state, filtered arrays
 
-**Q: What's your approach to caching in a React application?**
+- **useCallback**: Hook that caches function references
+  - Best for: Functions passed to child components wrapped in React.memo
+  - Cost: Memory overhead
+  - Example: Event handlers, API calls, data mutations
 
-A: "I use a layered approach: Browser caching via HTTP headers for static assets, service workers for offline support, React Query or SWR for API response caching, useMemo for expensive computations, and localStorage with expiry for user preferences. The key is choosing the right cache level for each data type based on how often it changes and how critical freshness is."
+**Real Code Comparison**:
+```jsx
+// React.memo - prevent re-render
+const UserCard = React.memo(({ user }) => {
+  console.log('UserCard rendered');
+  return <div>{user.name}</div>;
+});
 
-**Q: How would you optimize a React app that's already built?**
+// useMemo - cache computation
+const filteredUsers = useMemo(() => {
+  return users.filter(u => u.age > 18).sort((a, b) => a.name.localeCompare(b.name));
+}, [users]);
 
-A: "First, I'd profile with React DevTools Profiler to identify slow components. Second, run webpack-bundle-analyzer to find large dependencies. Third, check for unnecessary re-renders using why-did-you-render. Fourth, implement React.memo on expensive components. Fifth, add code splitting for large routes or features. Sixth, optimize images and enable lazy loading. Finally, measure the impact of each change with Lighthouse."
+// useCallback - cache function
+const handleDelete = useCallback((id) => {
+  setUsers(u => u.filter(x => x.id !== id));
+}, []); // Empty deps = never recreates
+```
 
-**Q: Explain tree shaking and how to ensure it works.**
+**Follow-up Questions to Prepare For**:
+- "What's the performance cost of over-memoizing?"
+  - Answer: Each memoization has overhead. Only memoize when actual benefit is proven.
+- "Can you over-use these hooks?"
+  - Answer: Yes! Simple components don't need memoization. Profile first.
+- "How do you decide what should go in the dependency array?"
+  - Answer: All values from outside the hook used inside it. Use exhaustive-deps linter rule.
 
-A: "Tree shaking removes unused code from the final bundle. To ensure it works: First, use ES6 imports/exports (not CommonJS require). Second, set 'modules: false' in babel config to preserve ES modules. Third, use named imports instead of default imports where possible. Fourth, configure package.json 'sideEffects' field. Fifth, use webpack production mode. You can verify tree shaking worked by checking the bundle size and searching for unused exports in the built code."
+---
 
-**Q: What metrics do you use to measure React performance?**
+#### Q2: How do you decide what to code split?
 
-A: "I track: Time to Interactive (TTI), First Contentful Paint (FCP), Largest Contentful Paint (LCP) using Lighthouse. Component render times using React Profiler. Bundle sizes and chunk counts using webpack-bundle-analyzer. Runtime performance using Chrome DevTools Performance tab. Real user metrics using services like Google Analytics or custom analytics. For each optimization, I measure before and after to quantify the improvement."
+**Expected Answer**: "I follow this priority: First, route-based splitting for different pages. Second, split heavy libraries like charts or rich text editors. Third, split features behind authentication or user permissions. Fourth, split rarely-used features like admin panels or advanced settings. I always measure with webpack-bundle-analyzer to verify impact."
 
-**Q: How do you handle performance in a large team?**
+**Prioritization Strategy**:
 
-A: "I implement: Performance budgets in the CI/CD pipeline that fail builds if exceeded. Automated bundle size checks on PRs. Regular performance audits using Lighthouse CI. Documentation of performance best practices. Code review guidelines focusing on performance. Shared components library with pre-optimized components. Regular team training on performance patterns."
+```
+Priority 1: Routes (Different pages users navigate to)
+  - Dashboard, Profile, Settings pages
+  - Impact: Highest - users often only visit 1-2 pages
+  - Implementation: Route-based lazy loading with Suspense
+
+Priority 2: Heavy Libraries (Large third-party packages)
+  - Charts (chart.js, recharts) = 150-300kb
+  - Editors (monaco, ace) = 500kb+
+  - Maps (mapbox, google-maps) = 200-400kb
+  - Impact: High - critical performance gain
+  - Implementation: Lazy load on component mount or user interaction
+
+Priority 3: Feature Gates (Behind user permissions)
+  - Admin panels for non-admin users  
+  - Premium features for free users
+  - Beta features
+  - Impact: Medium - reduces initial load for most users
+  - Implementation: Conditional lazy loading based on user role
+
+Priority 4: Rarely Used Features
+  - Advanced settings
+  - Export/Import functionality
+  - Help/Tutorial components
+  - Impact: Medium-Low - occasional use
+  - Implementation: Lazy load on first interaction
+```
+
+**Decision Making Framework**:
+```jsx
+const shouldCodeSplit = (component) => {
+  const checks = [
+    component.bundleSize > 50 * 1024,           // > 50kb
+    !component.usedOnInitialLoad,                // Not critical
+    component.externalDependencies > 2,          // Has dependencies
+    component.notAllUsersNeed                    // Conditional
+  ];
+  return checks.filter(Boolean).length >= 2;
+};
+```
+
+**Common Mistakes to Avoid**:
+- Splitting too many small components (creates too many chunks)
+- Not measuring the actual impact
+- Splitting code users need immediately
+- Creating chunks larger than the main bundle
+
+**Follow-up Questions**:
+- "How do you handle preloading of split chunks?"
+  - Answer: Use link prefetch tags or preload on hover/interaction
+- "What's too many code splits?"
+  - Answer: Each chunk has overhead. Aim for 3-10 chunks total.
+- "How do you handle failed chunk loading?"
+  - Answer: Implement error boundaries and retry logic
+
+---
+
+#### Q3: What's your approach to caching in a React application?
+
+**Expected Answer**: "I use a layered approach: Browser caching via HTTP headers for static assets, service workers for offline support, React Query or SWR for API response caching, useMemo for expensive computations, and localStorage with expiry for user preferences."
+
+**Caching Layer Strategy**:
+
+```
+1. Component Cache (useMemo)
+   └─ Duration: Component lifetime
+   └─ Cost: Memory
+
+2. Browser Cache (localStorage/sessionStorage)
+   └─ Duration: User preference (persistent or session)
+   └─ Cost: 5-10MB limit
+
+3. API Cache (React Query/SWR)
+   └─ Duration: 5-10 minutes (stale time)
+   └─ Cost: Memory + smart invalidation
+
+4. Service Worker Cache
+   └─ Duration: Permanent (with versioning)
+   └─ Cost: Disk space
+
+5. CDN Cache
+   └─ Duration: 1 year for versioned assets
+   └─ Cost: Network
+
+6. Browser HTTP Cache
+   └─ Duration: Configured via headers
+   └─ Cost: Disk
+```
+
+**Decision Matrix**:
+
+| Data Type | Cache Type | Duration | When to Use |
+|-----------|-----------|----------|-------------|
+| Static assets | HTTP + CDN | 1 year | Always |
+| User config | localStorage | Permanent | User preferences |
+| API data | React Query | 5-10 min | Frequently fetched data |
+| Calculations | useMemo | Component life | Heavy computations |
+| Offline content | Service Worker | Permanent | Critical pages |
+
+**Follow-up Questions**:
+- "How do you handle cache invalidation?"
+  - Answer: Use queryClient.invalidateQueries() after mutations
+- "When should you NOT cache?"
+  - Answer: Sensitive data, frequently changing data, user-specific content
+- "How do you test caching?"
+  - Answer: Use Network tab in DevTools, throttle in Chrome DevTools, mock service worker
+
+---
+
+#### Q4: How would you optimize a React app that's already built?
+
+**Expected Answer**: "First, I'd profile with React DevTools Profiler to identify slow components. Second, run webpack-bundle-analyzer to find large dependencies. Third, check for unnecessary re-renders using why-did-you-render. Fourth, implement React.memo on expensive components. Fifth, add code splitting. Sixth, optimize images. Finally, measure the impact with Lighthouse."
+
+**Step-by-Step Optimization Process**:
+
+```
+[ ] 1. MEASURE BASELINE
+    └─ Tools: Lighthouse, Chrome DevTools
+    └─ Metrics: FCP, LCP, TTI, CLS, FID
+
+[ ] 2. IDENTIFY PROBLEMS
+    ├─ React DevTools Profiler → Slow components
+    ├─ webpack-bundle-analyzer → Large dependencies
+    ├─ why-did-you-render → Unnecessary re-renders
+    └─ Chrome DevTools Performance → Long tasks
+
+[ ] 3. PRIORITIZE (Impact vs Effort)
+    ├─ High impact, low effort → Do first
+    └─ High impact, high effort → Plan for future
+
+[ ] 4. IMPLEMENT (Make changes)
+    ├─ React.memo on expensive components
+    ├─ Code splitting on routes/features
+    ├─ useMemo on expensive calculations
+    └─ useCallback on frequently passed functions
+
+[ ] 5. MEASURE AGAIN (Verify improvement)
+    ├─ Compare after each change
+    └─ Continue if significant improvement
+```
+
+**Common Issues & Quick Fixes**:
+
+| Issue | Detection | Fix | Impact |
+|-------|-----------|-----|--------|
+| Large dependencies | webpack-bundle-analyzer | Replace with smaller lib | High |
+| Unnecessary re-renders | why-did-you-render | Add React.memo | High |
+| Expensive calculations | React Profiler | Add useMemo | High |
+| Missing code splitting | Bundle > 1MB | Split by route | High |
+| Unoptimized images | Lighthouse | Use WebP, compression | High |
+| Slow API calls | Performance tab | Add caching | Medium |
+| Large context | why-did-you-render | Split contexts | Medium |
+
+**Follow-up Questions**:
+- "How do you decide which metrics to focus on?"
+  - Answer: Core Web Vitals (LCP, FID, CLS) matter most for UX
+- "What's a realistic performance improvement?"
+  - Answer: 20-40% typical, 50%+ is excellent
+- "How often should you optimize?"
+  - Answer: After major features, monthly audits minimum
+
+---
+
+#### Q5: Explain tree shaking and how to ensure it works.
+
+**Expected Answer**: "Tree shaking removes unused code from the final bundle. To ensure it works: First, use ES6 imports/exports (not CommonJS). Second, set 'modules: false' in babel config. Third, use named imports. Fourth, configure package.json 'sideEffects'. Fifth, use webpack production mode."
+
+**How Tree Shaking Works**:
+
+1. **Webpack analyzes imports statically** at build time
+2. **Marks used exports** in dependency graph
+3. **Removes unused exports** from final bundle
+4. **Minifier cleans up** dead code
+
+**Requirements for Tree Shaking**:
+
+```jsx
+// ✗ BREAKS Tree Shaking (CommonJS)
+const _ = require('lodash');
+
+// ✓ WORKS (ES6 modules)
+import { debounce } from 'lodash-es';
+
+// ✓ WORKS (named import)
+import debounce from 'lodash-es/debounce';
+
+// ✗ BREAKS (default import with large library)
+import lodash from 'lodash'; // Imports everything!
+```
+
+**Setup Configuration**:
+
+```javascript
+// 1. babel.config.js - Keep ES modules
+module.exports = {
+  presets: [
+    ['@babel/preset-env', { modules: false }]  // ← IMPORTANT
+  ]
+};
+
+// 2. webpack.config.js - Production mode
+module.exports = {
+  mode: 'production',  // ← IMPORTANT: Enables tree shaking
+  optimization: {
+    usedExports: true,
+    sideEffects: false
+  }
+};
+
+// 3. package.json - Declare side effects
+{
+  "sideEffects": ["*.css", "./src/polyfills.js"]
+}
+```
+
+**Real World Examples**:
+
+```jsx
+// EXPENSIVE (150kb+)
+import moment from 'moment';  // Only use 1 function
+
+// CHEAP (2kb)
+import dayjs from 'dayjs';  // Small library
+
+// EXPENSIVE (70kb)
+import _ from 'lodash';
+
+// CHEAP (1kb)
+import debounce from 'lodash-es/debounce';
+```
+
+**Follow-up Questions**:
+- "Can you tree shake CSS?"
+  - Answer: Not really. Use PurgeCSS/TailwindCSS instead
+- "Does tree shaking work in development?"
+  - Answer: No, only in production mode
+
+---
+
+#### Q6: What metrics do you use to measure React performance?
+
+**Expected Answer**: "I track: LCP, FCP, TTI using Lighthouse. Component render times using React Profiler. Bundle sizes using webpack-bundle-analyzer. Runtime performance using Chrome DevTools. Real user metrics using web-vitals library."
+
+**Core Web Vitals Priority**:
+
+```
+LCP (Largest Contentful Paint) - Load Speed ⭐ Most important
+Goal: < 2.5 seconds
+Measures: When largest element becomes visible
+
+FID (First Input Delay) - Interactivity ⭐ Important
+Goal: < 100 milliseconds
+Measures: Time from click to browser response
+
+CLS (Cumulative Layout Shift) - Stability ⭐ Important
+Goal: < 0.1
+Measures: Unexpected layout changes during load
+```
+
+**Other Important Metrics**:
+- FCP (First Contentful Paint): < 1.8s
+- TTI (Time to Interactive): < 3.8s
+- TTFB (Time to First Byte): < 600ms
+- TBT (Total Blocking Time): < 300ms
+
+**Measurement Tools**:
+
+```jsx
+// 1. Lighthouse (Built-in Chrome DevTools)
+Lighthouse → Generate Report
+Best for: Quick audits, before/after comparison
+Target Score: 90+
+
+// 2. Web Vitals Library (Real User Metrics)
+import { getLCP, getFID, getCLS } from 'web-vitals';
+getLCP(metric => console.log('LCP:', metric.value));
+
+// 3. React Profiler
+const onRender = (id, phase, actualDuration) => {
+  if (actualDuration > 1) console.log(`SLOW: ${id}`);
+};
+<Profiler id="App" onRender={onRender}>
+```
+
+**Real Example: Before & After**:
+
+BEFORE OPTIMIZATION:
+- LCP: 4.2s ✗ | FID: 250ms ⚠ | CLS: 0.35 ✗
+- Lighthouse: 32 | Bundle: 850kb
+
+AFTER OPTIMIZATION:
+- LCP: 1.8s ✓ | FID: 85ms ✓ | CLS: 0.08 ✓
+- Lighthouse: 94 | Bundle: 280kb (67% reduction)
+
+**Follow-up Questions**:
+- "Which metric is most important?"
+  - Answer: LCP determines user perception of speed
+- "How often should you measure?"
+  - Answer: Continuous monitoring, manual audits monthly
+
+---
+
+#### Q7: How do you handle performance in a large team?
+
+**Expected Answer**: "I implement: Performance budgets in CI/CD that fail builds if exceeded. Automated bundle size checks. Lighthouse CI audits. Performance guidelines documentation. Code review checklist. Shared optimized component library. Regular training."
+
+**Team Performance Framework**:
+
+```
+1. INFRASTRUCTURE (Automated)
+   ├─ Bundle Size Monitoring (fail if +50kb)
+   ├─ Lighthouse CI (fail if < 80)
+   └─ Performance Budget (LCP < 2.5s, FID < 100ms)
+
+2. PROCESS (Standards)
+   ├─ Code Review Checklist
+   ├─ Performance Guidelines Document
+   └─ Architectural Patterns
+
+3. PEOPLE (Knowledge)
+   ├─ Monthly Training Sessions
+   ├─ Performance Ambassadors
+   └─ Quarterly Performance Reviews
+
+4. TOOLS (Shared)
+   ├─ Pre-optimized Component Library
+   ├─ Performance Dashboard
+   └─ Performance Testing Setup
+```
+
+**Performance Guidelines**:
+
+```markdown
+# MUST DO
+- ✓ Use named imports only
+- ✓ Lazy load routes
+- ✓ Memoize expensive components
+- ✓ Add image dimensions (prevent CLS)
+- ✓ Use React.memo on list items
+
+# MUST NOT DO
+- ✗ Default imports from large libraries
+- ✗ Inline function definitions in JSX
+- ✗ Create styled components inside render
+- ✗ Use array index as React key
+- ✗ Store large objects in Context without useMemo
+```
+
+**Follow-up Questions**:
+- "How do you handle performance regression?"
+  - Answer: Lighthouse CI fails the build automatically
+- "What happens if team violates budget?"
+  - Answer: Build fails, requires team discussion
+
+---
+
+#### Q8: Tell me about a performance issue you fixed. What was the root cause?
+
+**How to Answer**: Show problem discovery, root cause analysis, solution, results, and learning.
+
+**Example Strong Answer**:
+
+"At my previous company, we had a dashboard showing 50+ charts. Initial load was taking 12 seconds.
+
+**Problem Discovery**: Users complained. Lighthouse showed LCP of 8s.
+
+**Root Cause Analysis**: 
+- webpack-bundle-analyzer → All chart libraries bundled upfront (800kb)
+- React Profiler → Charts rendered on mount even if not visible
+- Network tab → Waiting for all chart data before rendering
+
+**Solution Implemented**:
+1. Code split chart component: `lazy(() => import('./Charts'))`
+2. Lazy load charts based on active tab
+3. Implement virtual scrolling with react-window
+4. Add skeleton screens during load
+5. Cache chart data with React Query (5-minute stale)
+
+**Results**:
+- LCP: 8s → 1.8s (77% improvement)
+- Bundle: 850kb → 320kb (62% reduction)
+- TTI: 12s → 3.5s (71% improvement)
+- User satisfaction: 2.1/5 → 4.6/5
+
+**Key Learning**: Performance optimization requires measuring at every step. Most developers optimize wrong things."
+
+**What Interviewers Look For**:
+- ✓ Used data-driven approach
+- ✓ Used correct tools for diagnosis
+- ✓ Applied multiple techniques
+- ✓ Measured quantitatively
+- ✓ Explained tradeoffs
+- ✓ Learned from experience
+
+---
+
+#### Q9: When would you NOT optimize for performance?
+
+**Expected Answer**:
+
+"Interesting question. You shouldn't optimize if:
+
+1. **Premature Optimization**
+   - Don't optimize before measuring
+   - Example: Adding React.memo everywhere
+   - Cost exceeds benefit
+
+2. **Optimization Cost > Benefit**
+   - Takes 2 weeks but only saves 50ms
+   - Code becomes unmaintainable
+   - Users don't notice improvement
+
+3. **Feature Not Yet Used**
+   - Don't optimize unfinished features
+   - Code might be deleted
+   - Wait until stable and used
+
+4. **Assumption Wrong**
+   - Profile first - assumptions usually wrong
+   - 90% of time in 10% of code
+
+5. **User Base is Small**
+   - 100 users on high-speed connections
+   - Optimization ROI doesn't justify effort
+
+**Key Principle**: Measure → Analyze → Decide → Implement → Verify
+
+---
+
+#### Q10: How do you approach performance testing in CI/CD?
+
+**Expected Answer**: "I implement automated performance checks in the pipeline:
+
+```javascript
+// GitHub Actions Workflow
+name: Performance Tests
+on: [pull_request]
+
+jobs:
+  performance:
+    runs-on: ubuntu-latest
+    steps:
+      # 1. Build
+      - run: npm run build
+      
+      # 2. Check bundle size
+      - run: |
+          SIZE=$(du -sb dist | cut -f1)
+          if [ $SIZE -gt 300000 ]; then exit 1; fi
+      
+      # 3. Run Lighthouse CI
+      - uses: treosh/lighthouse-ci-action@v9
+      
+      # 4. Comment metrics on PR
+      - uses: actions/github-script@v6
+```
+
+**Key Automated Checks**:
+1. **Bundle Size** - Fail if +50kb
+2. **Lighthouse Score** - Fail if < 80
+3. **Core Web Vitals** - LCP < 2.5s, FID < 100ms
+4. **Code Splitting** - Ensure chunks < 200kb
+5. **Dependencies** - Warn if adding large deps
+
+**If Performance Test Fails**:
+- Build fails automatically
+- Requires team discussion
+- Options: Fix, increase budget (approval), revert
+
+---
+
+## Quick Reference: Interview Cheat Sheet
+
+### When Asked "Tell me about your performance experience"
+**Structure**: Problem → Measurement → Solution → Results → Learning
+
+### When Asked "How do you optimize X"
+**Process**: Profile → Analyze → Implement ONE change → Measure → Repeat
+
+### When Asked "What's your performance toolkit"
+**Tools**: Lighthouse, React Profiler, webpack-bundle-analyzer, web-vitals
+**Libraries**: React Query, React.memo, useMemo, useCallback
+**Techniques**: Code splitting, lazy loading, memoization, caching
+
+### Red Flags (AVOID SAYING)
+- ✗ "I optimize without measuring"
+- ✗ "We use React.memo everywhere"
+- ✗ "Performance doesn't matter much"
+- ✗ "I don't know what our metrics are"
+
+### Green Flags (ALWAYS SAY)
+- ✓ "We measure first, optimize based on data"
+- ✓ "We have performance budgets in CI/CD"
+- ✓ "We track real user metrics with web-vitals"
+- ✓ "We trade off code complexity vs benefit"
+- ✓ "Performance is part of our culture"
 
 ---
 
