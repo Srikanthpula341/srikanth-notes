@@ -1721,3 +1721,5429 @@ Incident: service or system failure impacting users. Process: detect (alerting),
 
 On-call responsibilities: respond quickly, communicate with stakeholders, execute runbooks. Blameless culture: focus on systems, not individuals. Document post-mortems, implement action items. Regular incident simulations (games) improve preparedness.
 
+---
+
+## Section 8: Advanced Spring & Microservices (Q301–350)
+
+### 301. Spring auto-configuration internals?
+
+Auto-configuration auto-configures Spring context based on classpath dependencies. Uses @Configuration, @ConditionalOnClass, @ConditionalOnProperty, @ConditionalOnMissingBean to conditionally create beans.
+
+Spring Boot scans META-INF/spring.factories for auto-configuration classes. Executes them in order via @AutoConfigureOrder or @AutoConfigureAfter. User's explicit @Bean definitions override via @ConditionalOnMissingBean.
+
+Example: spring-boot-starter-web adds Spring MVC auto-config. spring-boot-starter-data-jpa configures DataSource, EntityManagerFactory, TransactionManager if not already defined.
+
+Understand: order matters (database config before JPA config). Use spring.factories SPI for custom auto-configs. Disable auto-config with @SpringBootApplication(exclude={...}). Test: create application.yml, annotate test with @SpringBootTest, use @TestPropertySource to verify conditional activation.
+
+### 302. BeanPostProcessor in Spring?
+
+BeanPostProcessor intercepts bean creation lifecycle (after instantiation, before/after initialization). Allows modifying bean properties, wrapping beans, or creating proxies.
+
+Two methods: postProcessBeforeInitialization (before @PostConstruct, InitializingBean.afterPropertiesSet()), postProcessAfterInitialization (after init methods, often creates proxies for AOP).
+
+Example: auto-wire custom annotations, wrap beans with logging, create proxies for transaction management. Spring uses: CommonAnnotationBeanPostProcessor (@PostConstruct, @PreDestroy), AutowiredAnnotationBeanPostProcessor (@Autowired), RequiredAnnotationBeanPostProcessor (@Required).
+
+Advanced: register via @Bean, implement Ordered to control execution order. Pitfall: BeanPostProcessor called for every bean; keep logic efficient. Use responsibly; misuse causes initialization order issues, infinite cycles, or hard-to-debug behavior.
+
+### 303. ApplicationContext lifecycle?
+
+ApplicationContext creation: instantiate context (ClassPathXmlApplicationContext, AnnotationConfigApplicationContext), scan for beans, invoke BeanFactoryPostProcessors, instantiate beans (constructor → dependency injection → BeanPostProcessors → init methods).
+
+Startup events: ContextRefreshedEvent (after all beans initialized). Shutdown: ContextClosedEvent (on context.close() or JVM exit).
+
+Key phases: Bean definition loading → Bean instantiation → Property setting → BeanPostProcessor callbacks → Context ready (ContextRefreshedEvent) → Shutdown (destroy methods, ContextClosedEvent).
+
+Understand: initialization is synchronous; blocking in @PostConstruct delays startup. Use startup/shutdown hooks wisely. Test: use @SpringBootTest, verify beans via ApplicationContext.getBean(). Monitor: use Spring Boot Actuator (startup time endpoint).
+
+### 304. Spring AOP overview?
+
+AOP (Aspect-Oriented Programming) separates cross-cutting concerns (logging, security, monitoring) from business logic. Aspects encapsulate advice (code to run) with pointcuts (where to run).
+
+Advice types: @Before (pre-method), @After (post-method, always), @AfterReturning (on success), @AfterThrowing (on exception), @Around (wrap method, most powerful).
+
+Pointcuts: expressions matching methods. Example: @Around("execution(* com.example.service.*.*(..))")—advice wraps all methods in service package.
+
+Spring AOP: proxy-based (runtime), supports method-level interception. Cglib proxies for concrete classes, JDK proxies for interfaces. Limitation: only method calls via proxy; direct invocations skip AOP.
+
+Common use cases: @Transactional, custom annotations (caching, logging), security checks. Advanced: load-time weaving for non-proxy scenarios.
+
+Pitfall: forgetting @EnableAspectJAutoProxy. Performance: proxy overhead; avoid overuse. Testing: mock aspects; use @WithMockUser.
+
+### 305. Transaction proxy mechanism?
+
+@Transactional creates a proxy around method. On invocation: proxy intercepts → begins transaction → calls actual method → on success commit → on exception rollback (if matching @Transactional(rollbackFor=...)) → closes connection.
+
+Proxy-level: only works for method calls via proxy (autowired bean), not direct calls (this.method()). Requires @EnableTransactionManagement (enabled by default in Boot).
+
+Propagation: REQUIRED (reuse existing, create if none), REQUIRES_NEW (always new), NESTED (savepoint), MANDATORY (must exist), SUPPORTS (use if exists).
+
+Isolation: READ_UNCOMMITTED, READ_COMMITTED (default), REPEATABLE_READ, SERIALIZABLE (strictness vs. performance).
+
+Pitfall: method visibility (must be public/package-protected), rollback rules (unchecked exceptions roll back; checked don't). Nested transactions: REQUIRES_NEW is expensive; use NESTED (savepoints).
+
+Testing: @Transactional on test rolls back after test. Use @Transactional(propagation=PROPAGATION_NOT_SUPPORTED) to disable per test.
+
+### 306. Distributed transaction patterns?
+
+Distributed transactions span multiple databases/services. ACID guarantee is hard; use eventual consistency patterns.
+
+**Two-Phase Commit (2PC)**: coordinator prepares participants (locks resources), then commits. Complex, blocking, poor availability. Avoid in microservices.
+
+**Saga Pattern**: long-running transaction split into steps. Each step is local transaction on one service. Orchestration: central coordinator issues commands. Choreography: services emit events, others listen and react.
+
+Example (payment): OrderService creates order → PaymentService charges card → InventoryService reserves stock. If payment fails, emit RollbackEvent, compensate.
+
+Trade-off: eventual consistency (temporary inconsistency), complexity (handle rollbacks). Tools: Spring Cloud Data Flow, Axon Framework, Saga libraries.
+
+**Idempotency**: ensure retry-safety. Use correlation IDs. Store processed IDs; if retried with same ID, return cached result.
+
+### 307. Saga pattern implementation?
+
+**Orchestration**: 
+```java
+@Service
+public class OrderSaga {
+  public void createOrder(Order order) {
+    orderId = orderService.create(order);
+    try {
+      paymentClient.charge(order.getPrice());
+      inventoryClient.reserve(order.getItems());
+    } catch (Exception e) {
+      compensate(orderId);
+    }
+  }
+}
+```
+
+**Choreography**: Services trigger events, others listen. OrderService emits OrderCreated, PaymentService listens, charges card, emits PaymentCharged.
+
+Orchestration: easier to understand, single point of control. Choreography: decoupled, event-driven, harder to trace.
+
+Trade-offs: Orchestration: centralized, single failure cascades. Choreography: distributed, but circular dependencies possible. Both support eventual consistency; implement idempotency, store saga state, timeout handling.
+
+Testing: orchestration easier (mock clients). Choreography requires event-driven test setup.
+
+Tools: Axon Framework, Temporal, Camunda.
+
+### 308. Circuit breaker pattern?
+
+Circuit breaker prevents cascading failures. Monitors service calls; if failure rate exceeds threshold, stops calls (fast fail), gives service time to recover.
+
+States: Closed (normal), Open (threshold exceeded, calls rejected immediately), Half-Open (after timeout, retry call).
+
+Example (Resilience4j):
+```java
+@CircuitBreaker(name = "paymentService", fallbackMethod = "fallback")
+public Payment processPayment(Order order) {
+  return paymentClient.charge(order);
+}
+
+public Payment fallback(Order order, Exception e) {
+  return new Payment(status="PENDING");
+}
+```
+
+Configuration: failureThreshold (5 failures), slowCallDurationThreshold (2s), slowCallRateThreshold (50%).
+
+Benefits: prevents resource exhaustion, fast fail, recovery time.
+
+Pitfall: not end-to-end solution. Combine with retry (exponential backoff), timeout, fallback. Fallback logic must be safe.
+
+Monitoring: track circuit state changes, alert on prolonged open.
+
+### 309. Resilience4j patterns?
+
+Resilience4j provides: Bulkhead (thread pool isolation), Retry (exponential backoff + jitter), RateLimiter (limit request rate), Timeout (cancel call if too slow), Cache (cache successful responses).
+
+Example:
+```java
+@Bulkhead(name = "paymentService", type = THREAD_POOL)
+@Retry(name = "paymentService")
+@Timeout(name = "paymentService")
+public Payment process(Order order) { ... }
+```
+
+Composition: combine multiple patterns. Use @Retry + @CircuitBreaker (retry first, then circuit break).
+
+Monitor via Micrometer/Prometheus.
+
+Pitfall: configuration complexity. Start simple (circuit breaker only), add others as needed. Ensure timeout < retry deadline.
+
+### 310. Service mesh basics (Istio/Linkerd)?
+
+Service mesh: infrastructure layer managing service-to-service communication. Uses sidecars (lightweight proxies) alongside each service.
+
+**Istio**: Control plane (Istiod configures proxies), Data plane (Envoy sidecars handle traffic). Features: traffic management (routing, load balancing), security (mTLS, authorization), observability.
+
+Example (routing):
+```yaml
+VirtualService:
+  name: payment-vs
+  http:
+  - match:
+    - uri:
+        prefix: /v1
+    route:
+    - destination:
+        host: payment
+        port:
+          number: 8080
+```
+
+**Linkerd**: simpler, lighter-weight. Less feature-rich; good for getting started.
+
+Benefits: decouples communication logic, transparent mTLS, circuit breaking, retry, timeout at infrastructure level, observability without code changes.
+
+Trade-off: operational complexity, latency overhead, resource consumption.
+
+When to use: 10+ services, complex traffic management, strong security requirements.
+
+### 311. Observability (metrics, logs, traces)?
+
+Observability: understand system behavior via metrics, logs, traces (three pillars).
+
+**Metrics**: numerical data (requests/sec, latency, errors). Time-series (Prometheus). Export via Micrometer.
+
+**Logs**: structured events. Export to Elastic, Splunk. Use JSON format.
+
+**Traces**: end-to-end request flow. Tools: Jaeger, Zipkin. Propagate correlation ID (X-Trace-ID) across services.
+
+Stack: Spring Cloud Sleuth → Jaeger/Zipkin. Metrics → Prometheus → Grafana. Logs → Elasticsearch → Kibana.
+
+Pitfall: high cardinality metrics cause storage issues. Avoid per-user ID as metric label. Sampling: trace all in dev, sample in prod (10%).
+
+### 312. Event sourcing pattern?
+
+Event sourcing: store all state changes as immutable events. Current state derived by replaying events.
+
+Example: instead of storing account balance, store events: AccountCreated, MoneyDeposited, MoneyWithdrawn. Replay events → balance.
+
+Benefits: auditability (full history), temporal queries (state at any point), recovery (replay from snapshot + events), event-driven architecture.
+
+Trade-offs: Pro: complete audit trail, decoupled from state model. Con: eventual consistency, complexity (event versioning), storage overhead.
+
+Pitfall: event versioning (handle structure changes). Use snapshots (periodic full state) to speed up replay.
+
+Tools: Axon Framework, EventStore, Apache EventMesh.
+
+### 313. CQRS pattern?
+
+CQRS (Command Query Responsibility Segregation): separate read and write models. Write model optimized for commands, read model optimized for queries (denormalized).
+
+Example: Write model accepts CreateOrderCommand, stores event (normalized schema). Read model consumes events, maintains denormalized view. Query: fetch from read model (fast, no joins).
+
+Benefits: scalability (independent read/write scaling), read optimization (no joins), independence (different DB: Elasticsearch, Redis).
+
+Pitfall: eventual consistency (read model lags writes). Mitigate: include version number in write response; client checks version.
+
+Implementation: OrderCommandHandler handles command, publishes event. OrderReadModelProjector consumes event, updates denormalized view.
+
+Tools: Axon, event-sourcing libraries + async projections.
+
+### 314. Contract testing in microservices?
+
+Contract testing: validate service contracts (API contracts) without full integration. Consumer defines contract, provider verifies implementation.
+
+Tools: Pact (consumer-driven), Spring Cloud Contract (provider-driven).
+
+**Pact flow**: Consumer writes test → Pact generates mock server → Consumer test verifies → Export contract. Provider consumes contract, verifies implementation matches.
+
+Benefit: catch API mismatches early. Decoupled testing. Regression detection.
+
+Pitfall: contract drift (contract not updated with API changes). Use in CI/CD: consumer test publishes contract, provider test verifies, blocks merge if mismatch.
+
+### 315. Feature flags in Spring?
+
+Feature flags toggle features on/off without deployment. Use for gradual rollout, A/B testing, safe rollbacks.
+
+Example:
+```java
+@Component
+public class OrderFeatures {
+  private FeatureFlags flags;
+  
+  public boolean isV2PaymentEnabled() {
+    return flags.isPaymentV2Enabled();
+  }
+}
+
+if (features.isV2PaymentEnabled()) {
+  chargeV2(order);
+} else {
+  chargeV1(order);
+}
+```
+
+Runtime toggle: fetch flags from config server or feature flag service (LaunchDarkly, Unleash).
+
+Benefits: zero-downtime deployments, gradual rollout (10% users), quick rollback, A/B testing.
+
+Pitfall: flag clutter. Cleanup: retire flags after full rollout.
+
+### 316. Graceful shutdown in Spring Boot?
+
+Graceful shutdown: on JVM shutdown signal, stop accepting new requests, allow in-flight requests to complete, then terminate.
+
+Configuration:
+```yaml
+server:
+  shutdown: graceful
+  tomcat:
+    shutdown-wait-time: 30s
+```
+
+Lifecycle: Receive SIGTERM → Stop accepting new requests → Wait for in-flight requests → Close database connections, shut down thread pools → JVM exits.
+
+Pitfall: long-running requests may timeout. Consider queue-based approaches (accept requests, queue async workers; on shutdown, allow workers to finish).
+
+Testing: send SIGTERM, verify requests complete (no 503s), monitor cleanup logs.
+
+### 317. Multi-tenancy in Spring?
+
+Multi-tenancy: single application serves multiple isolated tenants. Data and configuration segregated per tenant.
+
+Approaches: Database per tenant (easy isolation, complex cross-tenant operations). Schema per tenant (balance). Row-level isolation (cost-effective, risk of leaks).
+
+Implementation (row-level):
+```java
+@Component
+public class TenantInterceptor implements HandlerInterceptor {
+  public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) {
+    String tenantId = request.getHeader("X-Tenant-ID");
+    TenantContext.setTenantId(tenantId);
+    return true;
+  }
+}
+
+@Query("SELECT o FROM Order o WHERE o.tenantId = :tenantId")
+List<Order> findByTenant(@Param("tenantId") String tenantId);
+```
+
+Security: validate tenant context matches user. Prevent cross-tenant data access.
+
+### 318. mTLS (mutual TLS)?
+
+mTLS: client and server both authenticate using certificates.
+
+Setup: CA issues certificates to client and server. Client presents certificate to server, server verifies. Server presents certificate to client, client verifies. Encrypted communication.
+
+Benefits: prevents MITM attacks, ensures both parties trusted.
+
+Configuration (Spring):
+```yaml
+server:
+  ssl:
+    key-store: keystore.p12
+    key-store-password: changeit
+    client-auth: NEED
+```
+
+Pitfall: certificate rotation, expiration handling. Use cert management tools (Let's Encrypt, internal CA).
+
+### 319. Data consistency strategies?
+
+Distributed systems sacrifice consistency for availability/partition tolerance (CAP theorem).
+
+**Strong consistency**: all nodes see same data. Expensive (coordination). Examples: RDBMS, primary-backup.
+
+**Eventual consistency**: temporary inconsistency, converges. Cheap. Examples: DNS, social feeds, read replicas.
+
+**Causal consistency**: related operations ordered. Example: add comment after post.
+
+**Bounded staleness**: guarantee freshness (data no older than X seconds). Example: Google Spanner.
+
+Strategies: Optimistic concurrency (version numbers). Pessimistic concurrency (locks). Event sourcing + CQRS (separate read/write). Quorum reads/writes (stronger than eventual).
+
+Trade-off: consistency vs. latency/availability. Choose based on use case: financial (strong), social (eventual).
+
+### 320. Handling schema evolution?
+
+Schema evolution: changing database schema over time (add columns, rename, deletions, type changes).
+
+Strategies: Backward compatible (add optional columns, accept null). Forward compatible (older code understands new data). Zero-downtime (deploy code handling both old/new schema, migrate data, deploy code using new schema).
+
+Tools: Flyway, Liquibase (version migrations).
+
+Pitfall: dropping columns breaks old code. Always deprecate, warn, then remove.
+
+API evolution: semantic versioning, deprecation headers (/v1, /v2). Consumer gives time to migrate.
+
+### 321. Load balancing strategies?
+
+Load balancer distributes requests across servers.
+
+Algorithms: Round-robin (fair, no server health awareness). Least connections (better under uneven load). Weighted (assign weights based on capacity). IP hash (session affinity). Response time (send to fastest).
+
+Tools: Nginx, HAProxy, AWS ELB, Spring Cloud Load Balancer.
+
+Sticky sessions: client routes to same server (preserves session state). Trade-off: if server fails, client disconnects. Prefer: externalize session (Redis).
+
+Health checks: periodically ping servers, remove unhealthy.
+
+### 322. Caching layers?
+
+Caching improves performance by reducing backend load.
+
+**Layers**: Client cache (browser, HTTP cache headers). CDN (geographic distribution, cache at edge). App cache (in-memory: Caffeine, distributed: Redis). Database cache (query results). Disk cache (filesystem).
+
+Trade-off: staleness (cache lag), invalidation complexity.
+
+Strategy (cache-aside):
+```java
+public Order getOrder(Long orderId) {
+  Order order = cache.get(orderId);
+  if (order == null) {
+    order = database.findById(orderId);
+    cache.put(orderId, order);
+  }
+  return order;
+}
+```
+
+Invalidation: TTL, event-based, explicit (cache.evict()).
+
+Pitfall: stale data (cache not invalidated). Use versioning, cache tags.
+
+Monitoring: hit rate, eviction rate, memory usage.
+
+### 323. Database replication?
+
+Replication: copy data across servers for reliability and read scaling.
+
+Types: Master-Slave (master accepts writes, slaves replicate asynchronously. Read scaling, single write point). Multi-master (multiple masters accept writes, replicate. Complex conflict resolution, better availability).
+
+Consistency: replication lag (slave slightly behind master). Use master for reads after writes, slaves for read-heavy.
+
+Failover: if master fails, promote slave. Requires coordination (Zookeeper, Raft).
+
+Implementation: MySQL semi-sync, PostgreSQL streaming, MongoDB replica sets.
+
+Pitfall: split-brain (network partition, multiple masters). Use consensus (Raft) to choose leader.
+
+### 324. Database sharding?
+
+Sharding: partition data across multiple databases by key (user ID, region).
+
+Shard key: determines which database stores data. Example: user_id % 10 = shard 0–9.
+
+Benefits: horizontal scaling, data locality, independent backups.
+
+Challenges: Hot shards (uneven distribution). Cross-shard queries (expensive). Resharding (rebalance data on adding/removing shards).
+
+Implementation: application layer (app determines shard), middleware (proxy intercepts).
+
+Tools: Vitess (MySQL sharding proxy), Django ORM sharding.
+
+Operational: monitor shard imbalance, use consistent hashing for resharding.
+
+### 325. Database indexing strategies?
+
+Indexes speed up queries by allowing fast lookups (avoid full table scans).
+
+Types: B-tree (default, supports range queries). Hash (fast exact match, no range). Full-text (search text fields). Bitmap (low-cardinality columns).
+
+Composite indexes: (country, city) allows: WHERE country=X AND city=Y (fast), WHERE country=X (fast), but WHERE city=Y (slow).
+
+Trade-off: indexes slow inserts/updates. Space overhead.
+
+Query optimization: EXPLAIN PLAN shows if index is used. Avoid: SELECT * (scan all columns), expressions on indexed column (WHERE age+1 > 30), OR conditions (may not use index).
+
+Pitfall: unused indexes (bloat). Regularly audit indexes.
+
+### 326. Monitoring database performance?
+
+Key metrics: query latency (p50, p95, p99), QPS (queries/sec), connections, replication lag, slow queries.
+
+Slow query log:
+```sql
+SET GLOBAL slow_query_log = 'ON';
+SET GLOBAL long_query_time = 2;
+```
+
+Tools: Datadog, New Relic, Prometheus + custom exporters.
+
+Connection pooling: monitor pool size, idle connections, wait time. Use HikariCP.
+
+### 327. Async processing patterns?
+
+Async: decouple request from response. Return quickly, process in background.
+
+Patterns: Fire-and-forget (submit task, no callback). Future/Callback (submit task, get future. Block or callback when ready). Reactive (subscribe to events, process on arrival).
+
+Implementation (Spring):
+```java
+@Async
+public void processAsync(Order order) {
+  paymentService.charge(order);
+  inventoryService.reserve(order);
+}
+```
+
+Trade-off: responsiveness, eventual consistency.
+
+Tools: Spring @Async, Kafka async, message queues.
+
+Pitfall: data loss (queue not persisted), retries (exponential backoff + DLQ), monitoring (queue depth).
+
+### 328. Idempotency patterns?
+
+Idempotency: repeating request produces same result. Crucial for distributed systems (network retries).
+
+Techniques: Idempotent keys (client provides unique ID, server deduplicates). Correlation IDs (track requests end-to-end). Version numbers (if version unchanged, operation is idempotent).
+
+Example:
+```java
+public OrderResponse createOrder(Order order, String idempotencyKey) {
+  if (orderExists(idempotencyKey)) {
+    return cachedResponse(idempotencyKey);
+  }
+  OrderResponse response = processOrder(order);
+  cacheResponse(idempotencyKey, response);
+  return response;
+}
+```
+
+Pitfall: storage (cache idempotency keys for how long?). Typically 24 hours (payment retry window).
+
+Testing: send duplicate request, verify same response.
+
+### 329. Rate limiting patterns?
+
+Rate limiting: restrict requests per time window. Prevent abuse, protect backend.
+
+Algorithms: Token bucket (refill tokens at fixed rate, burst allowed). Sliding window (count requests in last X seconds, no burst). Leaky bucket (constant drain rate, smooths traffic).
+
+Implementation (Spring Cloud):
+```yaml
+resilience4j:
+  ratelimiter:
+    instances:
+      paymentService:
+        limitRefreshPeriod: 1m
+        limitForPeriod: 100
+        timeoutDuration: 5s
+```
+
+API gateway (Nginx, Kong): enforce rate limits before app.
+
+Pitfall: distributed systems (rate limit per instance vs. global). Use Redis to track global rate.
+
+### 330. Kafka as message broker?
+
+Kafka: distributed event streaming. Topics store events, consumers subscribe.
+
+Key concepts: Topic (partitioned log of events). Partition (enables parallel consumption). Consumer group (multiple consumers share partitions, scale horizontally). Offset (position in partition; consumers track offset).
+
+Guarantee: at-least-once (may reprocess), exactly-once (harder, using idempotency).
+
+Example (Spring):
+```java
+@KafkaListener(topics = "orders", groupId = "order-processors")
+public void consume(OrderEvent event) {
+  processOrder(event.getOrder());
+}
+
+@Autowired private KafkaTemplate<String, OrderEvent> kafka;
+public void publish(OrderEvent event) {
+  kafka.send("orders", event);
+}
+```
+
+Pitfall: offset management (commit too early = loss, commit late = reprocess). Use manual commit on success.
+
+### 331. RabbitMQ vs. Kafka?
+
+| Feature | RabbitMQ | Kafka |
+|---------|----------|-------|
+| **Use case** | Task queues, work distribution | Event streaming, event sourcing |
+| **Semantics** | Push | Pull |
+| **Scale** | Vertical | Horizontal |
+| **Durability** | Ack-based | Offset-based |
+| **Replay** | Limited | Full history |
+| **Latency** | Low | Higher |
+
+RabbitMQ good for: task queues, work distribution, TTL-based expiry.
+
+Kafka good for: audit logs, event sourcing, real-time analytics, high throughput.
+
+### 332. Kafka offset management?
+
+Offset: position in partition. Consumers track offset; on restart, resume from offset.
+
+Strategies: Auto-commit (offset committed periodically, default 5s. Risk: reprocess if crash before commit). Manual commit (commit after processing. Risk: long processing, broker thinks consumer dead).
+
+Spring config:
+```yaml
+spring:
+  kafka:
+    consumer:
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+    listener:
+      ack-mode: manual
+```
+
+Handler:
+```java
+@KafkaListener(topics = "orders")
+public void consume(OrderEvent event, Acknowledgment ack) {
+  try {
+    processOrder(event);
+    ack.acknowledge();
+  } catch (Exception e) {
+    // don't acknowledge; will retry
+  }
+}
+```
+
+Pitfall: slow processing (offset lag grows). Monitor consumer lag.
+
+### 333. Event-driven architecture?
+
+Event-driven: components communicate via events. Decoupled, scalable, real-time.
+
+Pattern: producer publishes, consumers subscribe. Event bus (Kafka, RabbitMQ, SNS).
+
+Example (microservices):
+```
+OrderService → OrderCreatedEvent → PaymentService
+                                 → NotificationService
+                                 → AnalyticsService
+```
+
+Benefits: scalability, flexibility (add consumer without modifying producer), real-time.
+
+Pitfall: eventual consistency (consumer lag), event versioning, debugging (distributed tracing essential).
+
+Tools: Spring Cloud Stream, AWS SNS/SQS.
+
+### 334. Webhook vs. polling?
+
+**Polling**: consumer periodically asks for updates (pull). Simple, frequent requests.
+
+**Webhook**: provider calls consumer (push). Real-time, fewer requests.
+
+Use polling for: unreliable consumers, low-frequency updates.
+
+Use webhooks for: real-time requirements, reliable consumers (with retry).
+
+Implementation (webhook):
+```java
+@PostMapping("/webhooks/payment-status")
+public void handlePaymentStatusUpdate(@RequestBody PaymentStatusEvent event) {
+  orderService.updatePaymentStatus(event);
+}
+```
+
+Pitfall: webhook delivery failures. Implement retry (exponential backoff), dead letter queue.
+
+### 335. Stream processing (Kafka Streams)?
+
+Kafka Streams: library for building stream processing apps. Processes events in real-time.
+
+Example: aggregate orders by minute.
+```java
+KStream<String, Order> orders = topology.stream("orders");
+KTable<Windowed<String>, Long> orderCount = orders
+  .groupByKey()
+  .windowedBy(TimeWindows.of(Duration.ofMinutes(1)))
+  .count();
+```
+
+Advantages: exactly-once semantics, local state stores, scalability.
+
+Pitfall: stateful processing (maintains local state, distributed consensus hard). Use Flink/Spark for complex streams.
+
+### 336. Monitoring with Prometheus?
+
+Prometheus: time-series database for metrics. Scrapes endpoints, stores data, enables querying.
+
+Setup: Instrument code (Micrometer). Expose /actuator/prometheus. Configure Prometheus to scrape. Query and alert.
+
+Example metric:
+```java
+Counter.builder("orders.created")
+  .description("Total orders created")
+  .register(meterRegistry);
+```
+
+Query (PromQL):
+```
+rate(orders_created_total[5m])
+```
+
+Alert:
+```yaml
+alert: HighErrorRate
+expr: rate(orders_failed_total[5m]) > 0.05
+for: 5m
+```
+
+### 337. Distributed tracing with Jaeger?
+
+Jaeger: traces requests across services. Correlates logs/metrics.
+
+Setup: Spring Cloud Sleuth (extracts trace ID). Report to Jaeger (Brave client). Query Jaeger UI.
+
+Trace includes: transaction ID, service name, span duration, errors.
+
+Example: OrderService calls PaymentService → trace_id = abc123 → OrderService span: 10ms → PaymentService span: 5ms.
+
+Benefits: identify bottlenecks, visualize request flow, causality.
+
+Pitfall: sampling (trace all in dev; sample in prod). High-volume tracing expensive.
+
+### 338. Spring Cloud Gateway?
+
+API Gateway: entry point for all requests. Routes to services, enforces policies.
+
+Configuration:
+```yaml
+spring:
+  cloud:
+    gateway:
+      routes:
+      - id: order-service
+        uri: http://order-service:8080
+        predicates:
+        - Path=/orders/**
+```
+
+Custom filter:
+```java
+@Component
+public class AuthFilter implements GlobalFilter {
+  public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {
+    String token = exchange.getRequest().getHeaders().getFirst("Authorization");
+    if (!validateToken(token)) {
+      return exchange.getResponse().setStatusCode(HttpStatus.UNAUTHORIZED).setComplete();
+    }
+    return chain.filter(exchange);
+  }
+}
+```
+
+Benefits: single entry point, centralized auth, rate limiting, request/response transformation.
+
+Pitfall: single point of failure (use load balancer). Latency (additional hop).
+
+### 339. Deployment automation (CI/CD)?
+
+CI/CD: continuously integrate code, run tests, deploy to production.
+
+Pipeline: Commit code → trigger build. Run tests (unit, integration, E2E). Build artifact (Docker image, JAR). Deploy to staging. Deploy to production (canary, rolling).
+
+Tools: Jenkins, GitLab CI, GitHub Actions, ArgoCD.
+
+Example (GitHub Actions):
+```yaml
+name: CI/CD
+on: [push]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v2
+    - run: mvn test
+```
+
+Pitfall: slow tests. Parallelize, split into layers.
+
+### 340. Canary deployments?
+
+Canary: gradually roll out new version. Route small % traffic (5%) to new version, monitor metrics.
+
+If error rate spikes → rollback. If stable → increase traffic.
+
+Tools: Istio, Flagger (automates canary).
+
+Configuration (Istio):
+```yaml
+VirtualService:
+  name: payment-vs
+  http:
+  - match: []
+    route:
+    - destination:
+        host: payment
+        subset: v1
+      weight: 95
+    - destination:
+        host: payment
+        subset: v2
+      weight: 5
+```
+
+Benefits: minimize impact, rollback easy, data-driven decisions.
+
+### 341. Blue-green deployment?
+
+Blue-green: two production environments (blue, green). Deploy to inactive (green), switch traffic. Quick rollback (switch back to blue).
+
+Benefits: zero-downtime, easy rollback.
+
+Trade-off: double infrastructure, data sync between environments.
+
+### 342. Infrastructure as Code?
+
+IaC: define infrastructure (servers, networks, databases) in code. Version controlled, reproducible.
+
+Tools: Terraform, CloudFormation, Ansible.
+
+Example (Terraform):
+```hcl
+resource "aws_instance" "web" {
+  ami           = "ami-12345"
+  instance_type = "t2.micro"
+  tags = {
+    Name = "web-server"
+  }
+}
+```
+
+Benefits: reproducibility, version control, automation.
+
+Pitfall: state management, secrets in code. Use secret management (Vault, AWS Secrets Manager).
+
+### 343. Containerization (Docker)?
+
+Docker: package app + dependencies in container. Lightweight, portable.
+
+Dockerfile:
+```dockerfile
+FROM openjdk:11-jdk
+COPY target/app.jar app.jar
+ENTRYPOINT ["java", "-jar", "app.jar"]
+```
+
+Build and run:
+```bash
+docker build -t myapp:1.0 .
+docker run -d -p 8080:8080 myapp:1.0
+```
+
+Benefits: consistency (same environment prod/dev), fast startup, scalability.
+
+Pitfall: image bloat. Use multi-stage builds.
+
+### 344. Kubernetes basics?
+
+Kubernetes: orchestrate containers. Manages deployment, scaling, networking.
+
+Core concepts: Pod (smallest deployable unit). Deployment (desired state: replicas, image). Service (stable IP, load balancing). ConfigMap (configuration). Secret (sensitive data).
+
+Deployment YAML:
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-service
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: payment-service
+  template:
+    spec:
+      containers:
+      - name: payment
+        image: payment-service:1.0
+        ports:
+        - containerPort: 8080
+```
+
+Benefits: auto-scaling, self-healing, rolling updates, resource management.
+
+Pitfall: complexity, operational overhead.
+
+### 345. Helm charts?
+
+Helm: package manager for Kubernetes. Templates reduce boilerplate.
+
+Chart structure: templates, values.yaml, Chart.yaml.
+
+Values YAML:
+```yaml
+replicaCount: 3
+image:
+  repository: payment-service
+  tag: 1.0
+```
+
+Template (deployment.yaml):
+```yaml
+replicas: {{ .Values.replicaCount }}
+image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
+```
+
+Deploy:
+```bash
+helm install payment ./payment-chart -f values.yaml
+```
+
+Benefits: reusable, environments, versioning.
+
+### 346. StatefulSets vs. Deployments?
+
+**Deployments**: stateless apps. Pods interchangeable, no unique identity. Good for web services.
+
+**StatefulSets**: stateful apps. Each pod has stable identity (name, storage). Good for databases, message queues.
+
+Example (StatefulSet):
+```yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mysql
+spec:
+  serviceName: mysql
+  replicas: 3
+  volumeClaimTemplates:
+  - metadata:
+      name: mysql-storage
+    spec:
+      accessModes: [ReadWriteOnce]
+      resources:
+        requests:
+          storage: 10Gi
+```
+
+Benefits: stable identity, persistent storage, ordered startup/shutdown.
+
+Pitfall: complexity (managing replicas, storage).
+
+### 347. Horizontal Pod Autoscaling?
+
+HPA: auto-scale pods based on metrics (CPU, memory, custom).
+
+Configuration:
+```yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: payment-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: payment-service
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+```
+
+Behavior: if avg CPU > 70%, add pod (up to 10). If < 30%, remove pod (min 2).
+
+Pitfall: metrics must be exposed (Prometheus), HPA checks every 15s (lag).
+
+### 348. PersistentVolumes in Kubernetes?
+
+PersistentVolume: storage independent of pod lifecycle. Pod crashes, data persists.
+
+Types: local storage, NFS, AWS EBS, Google Persistent Disk.
+
+Claim (PersistentVolumeClaim):
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: data-pvc
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+```
+
+Pod mount:
+```yaml
+containers:
+- name: app
+  volumeMounts:
+  - name: data
+    mountPath: /data
+volumes:
+- name: data
+  persistentVolumeClaim:
+    claimName: data-pvc
+```
+
+Pitfall: storage provisioning, performance varies.
+
+### 349. ConfigMaps and Secrets?
+
+**ConfigMap**: non-sensitive configuration (feature flags, DB URL).
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+data:
+  app.properties: |
+    debug=false
+    feature.payments.v2=true
+```
+
+**Secret**: sensitive data (passwords, API keys). Base64 encoded; use external secret manager.
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: db-secret
+type: Opaque
+data:
+  password: Y2hhbmdlaXQ=
+```
+
+Pitfall: Secrets not encrypted at rest by default. Use external secret management (Vault, AWS Secrets Manager).
+
+### 350. Service mesh observability?
+
+Service mesh (Istio) provides built-in observability: metrics, logs, traces without code changes.
+
+Metrics (Prometheus):
+```
+istio_request_total{destination_workload="payment-service", response_code="200"}
+```
+
+Integration stack: Istio → Prometheus (scrape metrics). Jaeger (distributed tracing). Grafana (visualize metrics). Kiali (observe service mesh).
+
+Kiali: shows services, traffic flow, latency, error rates. Visual representation of mesh.
+
+Pitfall: observability overhead (sidecar proxies increase resource usage, latency).
+
+Benefit: service behavior without code instrumentation.
+
+---
+
+## Q351–Q400: Advanced Spring & Microservices Continued
+
+### Q351: What is integration testing in the Spring context? Provide an example.
+
+Integration testing validates component interactions (service, repository, controller). @SpringBootTest loads full application context.
+
+Example:
+```java
+@SpringBootTest
+@AutoConfigureTestDatabase(replace = REPLACE_ANY)
+public class OrderServiceIntegrationTest {
+  @Autowired OrderService orderService;
+  @Autowired OrderRepository orderRepository;
+  
+  @Test
+  public void testCreateOrder() {
+    Order order = orderService.createOrder(new Order(userId=1, amount=100));
+    Order saved = orderRepository.findById(order.getId());
+    assertThat(saved.getAmount()).isEqualTo(100);
+  }
+}
+```
+
+Trade-off: slow (full context), but catches real interactions. Better than unit tests alone for confidence.
+
+Pitfall: sharing test data state; use @DirtiesContext to reset context.
+
+---
+
+### Q352: What does Spring Actuator provide? Name key endpoints.
+
+Spring Actuator exposes operational endpoints for monitoring production applications.
+
+Key endpoints:
+- /actuator/health: application status (UP, DOWN)
+- /actuator/metrics: Micrometer metrics (jvm.memory, http.requests)
+- /actuator/prometheus: Prometheus-format metrics
+- /actuator/env: environment properties
+- /actuator/beans: registered beans
+- /actuator/threaddump: thread info
+
+Example:
+```yaml
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics,prometheus
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+```
+
+Benefit: production visibility without code changes.
+
+Pitfall: exposing all endpoints is security risk; restrict access via Spring Security.
+
+---
+
+### Q353: What are advanced Spring Data JPA features?
+
+Custom @Query, projections, lazy loading, N+1 prevention, specification pattern.
+
+Example (custom query):
+```java
+@Repository
+public interface OrderRepository extends JpaRepository<Order, Long> {
+  @Query("SELECT o FROM Order o WHERE o.userId = ?1 AND o.status = 'COMPLETED'")
+  List<Order> findCompletedOrdersByUser(Long userId);
+}
+```
+
+Projection (fetch only columns):
+```java
+public interface OrderProjection {
+  Long getId();
+  String getStatus();
+}
+
+@Query("SELECT o FROM Order o WHERE o.userId = ?1")
+List<OrderProjection> findOrdersProjection(Long userId);
+```
+
+N+1 prevention via @EntityGraph:
+```java
+@EntityGraph(attributePaths = {"items", "customer"})
+List<Order> findAll();
+```
+
+Benefit: control over queries, reduced data transfer, better performance.
+
+Pitfall: lazy loading causes N+1 queries if not using @EntityGraph.
+
+---
+
+### Q354: Explain Spring WebFlux and reactive programming.
+
+Spring WebFlux provides non-blocking, asynchronous reactive framework using Mono (0-1 element) and Flux (0-* elements).
+
+Example:
+```java
+@RestController
+@RequestMapping("/orders")
+public class OrderController {
+  @Autowired OrderService orderService;
+  
+  @GetMapping("/{id}")
+  public Mono<Order> getOrder(@PathVariable Long id) {
+    return orderService.findOrder(id);
+  }
+  
+  @GetMapping
+  public Flux<Order> getAllOrders() {
+    return orderService.findAllOrders();
+  }
+}
+
+@Service
+public class OrderService {
+  @Autowired OrderRepository orderRepository;
+  
+  public Mono<Order> findOrder(Long id) {
+    return orderRepository.findById(id);
+  }
+  
+  public Flux<Order> findAllOrders() {
+    return orderRepository.findAll();
+  }
+}
+```
+
+Backpressure: consumer signals demand, producer adapts (subscribeOn/publishOn).
+
+Trade-off: higher throughput, but steeper learning curve, harder debugging.
+
+Pitfall: mixing blocking code in reactive chains (use blockingGet() only in tests).
+
+---
+
+### Q355: What is Spring Security's OAuth2/OpenID Connect integration?
+
+OAuth2 enables secure delegated access. OpenID Connect adds identity layer.
+
+Example (OAuth2 client configuration):
+```yaml
+spring:
+  security:
+    oauth2:
+      client:
+        registration:
+          google:
+            client-id: <id>
+            client-secret: <secret>
+            scope: openid,profile,email
+        provider:
+          google:
+            issuer-uri: https://accounts.google.com
+```
+
+Authorization flow:
+1. User clicks "Login with Google"
+2. Browser redirects to Google authorization endpoint
+3. User consents
+4. Google redirects back with authorization code
+5. Backend exchanges code for access token (server-to-server)
+6. Backend uses access token to fetch user info
+7. Create session/JWT, redirect to app
+
+Custom AuthenticationProvider:
+```java
+@Component
+public class CustomAuthProvider implements AuthenticationProvider {
+  public Authentication authenticate(Authentication auth) {
+    String username = auth.getName();
+    String password = (String) auth.getCredentials();
+    if (isValidCredential(username, password)) {
+      return new UsernamePasswordAuthenticationToken(username, null, getAuthorities(username));
+    }
+    throw new BadCredentialsException("Invalid");
+  }
+  
+  public boolean supports(Class<?> auth) {
+    return UsernamePasswordAuthenticationToken.class.isAssignableFrom(auth);
+  }
+}
+```
+
+Benefit: SSO, reduced password management, user consent.
+
+Pitfall: token revocation complexity, refresh token management, PKCE for mobile.
+
+---
+
+### Q356: How do you version REST APIs?
+
+Versioning strategies: URL path (/v1/orders), query parameter (?version=1), header (Accept-Version), content negotiation.
+
+URL path (most explicit):
+```java
+@RestController
+@RequestMapping("/v1/orders")
+public class OrderControllerV1 {
+  @GetMapping("/{id}")
+  public ResponseEntity<OrderV1Dto> getOrder(@PathVariable Long id) {
+    return ResponseEntity.ok(new OrderV1Dto(...));
+  }
+}
+
+@RestController
+@RequestMapping("/v2/orders")
+public class OrderControllerV2 {
+  @GetMapping("/{id}")
+  public ResponseEntity<OrderV2Dto> getOrder(@PathVariable Long id) {
+    return ResponseEntity.ok(new OrderV2Dto(...));
+  }
+}
+```
+
+Header versioning:
+```java
+@RestController
+@RequestMapping("/orders")
+public class OrderController {
+  @GetMapping(value = "/{id}", headers = "Accept-Version=1")
+  public ResponseEntity<OrderV1Dto> getOrderV1(@PathVariable Long id) { ... }
+  
+  @GetMapping(value = "/{id}", headers = "Accept-Version=2")
+  public ResponseEntity<OrderV2Dto> getOrderV2(@PathVariable Long id) { ... }
+}
+```
+
+Trade-off: URL path is explicit (cache-friendly), header is subtle (harder to test in browser).
+
+Pitfall: breaking changes require client migration strategy.
+
+---
+
+### Q357: Describe error handling and recovery patterns.
+
+Global exception handler via @RestControllerAdvice:
+```java
+@RestControllerAdvice
+public class GlobalExceptionHandler {
+  @ExceptionHandler(EntityNotFoundException.class)
+  public ResponseEntity<ErrorResponse> handleNotFound(EntityNotFoundException e) {
+    return ResponseEntity.status(404).body(new ErrorResponse(e.getMessage()));
+  }
+  
+  @ExceptionHandler(DataIntegrityViolationException.class)
+  public ResponseEntity<ErrorResponse> handleConstraint(DataIntegrityViolationException e) {
+    return ResponseEntity.status(409).body(new ErrorResponse("Conflict"));
+  }
+  
+  @ExceptionHandler(Exception.class)
+  public ResponseEntity<ErrorResponse> handleGeneric(Exception e) {
+    return ResponseEntity.status(500).body(new ErrorResponse("Internal Server Error"));
+  }
+}
+```
+
+Recovery patterns:
+- Retry with exponential backoff (circuit breaker fallback)
+- Graceful degradation (cached data if service unavailable)
+- Circuit breaker (fail fast, prevent cascading failure)
+- Compensation (rollback in saga)
+
+Benefit: consistent error responses, resilience.
+
+Pitfall: catching Exception too broadly masks real issues; log all errors.
+
+---
+
+### Q358: What performance tuning strategies improve Spring applications?
+
+Database optimization:
+- Index frequently queried columns (composite index on user_id + status)
+- Connection pooling: HikariCP (minimumPoolSize=5, maximumPoolSize=20, idle timeout)
+- Query optimization: fetch only needed columns, use LIMIT, avoid N+1
+
+Caching:
+- @Cacheable on method: store result
+- @CacheEvict on update: invalidate
+- Cache-aside pattern: miss → fetch → store
+
+Example:
+```java
+@Service
+public class OrderService {
+  @Cacheable(value = "orders", key = "#userId", unless = "#result == null")
+  public Order getOrder(Long userId) {
+    return orderRepository.findById(userId);
+  }
+  
+  @CacheEvict(value = "orders", key = "#order.userId")
+  public void updateOrder(Order order) {
+    orderRepository.save(order);
+  }
+}
+```
+
+Thread pool tuning: TaskExecutor with corePoolSize, maxPoolSize, queue capacity.
+
+JVM tuning: -Xmx2g (heap), -XX:+UseG1GC (garbage collector).
+
+Trade-off: optimization adds complexity; profile before optimizing.
+
+Pitfall: caching stale data; use TTL (time-to-live) and invalidation strategies.
+
+---
+
+### Q359: What are logging best practices in distributed systems?
+
+Structured logging (JSON) enables machine parsing:
+```json
+{
+  "timestamp": "2024-01-15T10:30:45Z",
+  "level": "ERROR",
+  "service": "order-service",
+  "traceId": "abc123def456",
+  "userId": "user-789",
+  "message": "Failed to process payment",
+  "error": "PaymentGatewayTimeout"
+}
+```
+
+Implement with Logback + Logstash:
+```xml
+<appender name="JSON" class="net.logstash.logback.appender.LogstashTcpSocketAppender">
+  <destination>localhost:5000</destination>
+</appender>
+```
+
+Correlation IDs propagate across services:
+```java
+@Component
+public class CorrelationIdFilter implements Filter {
+  public void doFilter(ServletRequest req, ServletResponse res, FilterChain chain) {
+    String correlationId = UUID.randomUUID().toString();
+    MDC.put("traceId", correlationId);
+    chain.doFilter(req, res);
+    MDC.remove("traceId");
+  }
+}
+```
+
+Pass correlation ID in headers (X-Trace-Id) to downstream services.
+
+Benefit: tracing requests across services, debugging distributed issues.
+
+Pitfall: logging sensitive data (passwords, credit cards); use sanitization.
+
+---
+
+### Q360: Explain Spring Cloud Config and externalized configuration.
+
+Spring Cloud Config centralizes configuration in Git repository, enabling dynamic refresh.
+
+Server setup:
+```properties
+spring.cloud.config.server.git.uri=https://github.com/config-repo
+```
+
+Client setup:
+```yaml
+spring:
+  application:
+    name: order-service
+  cloud:
+    config:
+      uri: http://config-server:8888
+```
+
+Configuration file: order-service.properties in Git repo:
+```properties
+database.url=jdbc:mysql://localhost/orders
+database.username=root
+feature.payment=true
+```
+
+Access in code:
+```java
+@Component
+public class OrderConfig {
+  @Value("${database.url}")
+  private String databaseUrl;
+  
+  @Value("${feature.payment}")
+  private boolean paymentFeatureEnabled;
+}
+```
+
+Dynamic refresh via @RefreshScope:
+```java
+@Component
+@RefreshScope
+public class FeatureToggle {
+  @Value("${feature.payment}")
+  private boolean paymentEnabled;
+  
+  public boolean isPaymentEnabled() {
+    return paymentEnabled; // reflects updated value after /actuator/refresh
+  }
+}
+```
+
+Trigger refresh:
+```bash
+curl -X POST http://localhost:8080/actuator/refresh
+```
+
+Benefit: configuration changes without redeploy.
+
+Pitfall: eventual consistency; some instances may be out of sync during refresh.
+
+---
+
+### Q361: What is Spring Batch and when do you use it?
+
+Spring Batch processes large volumes of data in chunks. ItemReader → ItemProcessor → ItemWriter.
+
+Example (bulk import):
+```java
+@Configuration
+@EnableBatchProcessing
+public class BatchConfig {
+  @Bean
+  public Job importOrdersJob(JobRepository jobRepository, PlatformTransactionManager tm) {
+    return new JobBuilder("importOrders", jobRepository)
+      .start(orderStep(jobRepository, tm))
+      .build();
+  }
+  
+  @Bean
+  public Step orderStep(JobRepository jobRepository, PlatformTransactionManager tm) {
+    return new StepBuilder("orderStep", jobRepository)
+      .<OrderCSVRecord, Order> chunk(100) // 100 items per transaction
+      .reader(new FlatFileItemReaderBuilder<OrderCSVRecord>()
+        .name("csvReader")
+        .resource(new ClassPathResource("orders.csv"))
+        .delimited()
+        .names("orderId", "userId", "amount")
+        .targetType(OrderCSVRecord.class)
+        .build())
+      .processor(new ItemProcessor<OrderCSVRecord, Order>() {
+        public Order process(OrderCSVRecord csv) {
+          return new Order(csv.getOrderId(), csv.getUserId(), csv.getAmount());
+        }
+      })
+      .writer(new RepositoryItemWriter<Order>() {
+        {
+          setRepository(orderRepository);
+          setMethodName("save");
+        }
+      })
+      .transactionManager(tm)
+      .build();
+  }
+}
+```
+
+Benefits: transaction management, chunking (memory efficient), restart capability on failure.
+
+Pitfall: stateful processors across chunks; use StepExecution to maintain state.
+
+---
+
+### Q362: Explain gRPC and Protocol Buffers.
+
+gRPC (Google Remote Procedure Call) is high-performance RPC framework using binary serialization (Protocol Buffers).
+
+Define service in .proto file:
+```proto
+syntax = "proto3";
+
+package order;
+
+message Order {
+  int64 id = 1;
+  int64 user_id = 2;
+  double amount = 3;
+  string status = 4;
+}
+
+service OrderService {
+  rpc GetOrder(GetOrderRequest) returns (Order);
+  rpc CreateOrder(Order) returns (Order);
+}
+
+message GetOrderRequest {
+  int64 order_id = 1;
+}
+```
+
+Server implementation:
+```java
+@GrpcService
+public class OrderServiceImpl extends OrderServiceGrpc.OrderServiceImplBase {
+  @Autowired OrderRepository orderRepository;
+  
+  @Override
+  public void getOrder(GetOrderRequest request, StreamObserver<Order> response) {
+    Order order = orderRepository.findById(request.getOrderId());
+    response.onNext(order);
+    response.onCompleted();
+  }
+}
+```
+
+Client:
+```java
+@Component
+public class OrderClient {
+  private OrderServiceGrpc.OrderServiceBlockingStub stub;
+  
+  public OrderClient(ManagedChannel channel) {
+    this.stub = OrderServiceGrpc.newBlockingStub(channel);
+  }
+  
+  public Order getOrder(Long orderId) {
+    return stub.getOrder(GetOrderRequest.newBuilder().setOrderId(orderId).build());
+  }
+}
+```
+
+Benefits: binary format (small payload), strongly typed schema, HTTP/2 multiplexing, bidirectional streaming.
+
+Pitfall: less human-readable than JSON; requires schema definition and code generation.
+
+---
+
+### Q363: What are message patterns in distributed systems?
+
+Pub-Sub (asynchronous, decoupled):
+- Producer publishes event to topic
+- Multiple consumers subscribe independently
+- Example: OrderCreatedEvent → Invoice Service, Notification Service, Analytics
+
+Request-Reply (synchronous RPC):
+- Producer sends request, waits for response
+- Tight coupling, but immediate feedback
+- Example: Payment Service calls Credit Card Gateway
+
+Event Sourcing (immutable event log):
+- All state changes stored as events
+- Replay events to restore state
+- Example: Order → OrderCreatedEvent, OrderPaidEvent, OrderShippedEvent
+
+Saga (distributed transaction):
+- Long-running process with compensating transactions
+- Example: CreateOrder → Reserve Inventory → Process Payment (if fail, compensate each)
+
+Benefit: scalability (Pub-Sub, async), consistency (Request-Reply), auditability (Event Sourcing).
+
+Pitfall: eventual consistency requires handling duplicate processing, out-of-order events.
+
+---
+
+### Q364: How does Spring Scheduling work?
+
+@Scheduled runs tasks at fixed intervals or cron expressions.
+
+Example:
+```java
+@Component
+public class OrderCleanupTask {
+  @Autowired OrderRepository orderRepository;
+  
+  @Scheduled(fixedRate = 60000) // every 60 seconds
+  public void cleanupExpiredOrders() {
+    orderRepository.deleteExpiredOrders();
+  }
+  
+  @Scheduled(cron = "0 0 2 * * ?") // daily at 2 AM
+  public void dailyReport() {
+    System.out.println("Sending daily report");
+  }
+}
+```
+
+Enable scheduling:
+```java
+@SpringBootApplication
+@EnableScheduling
+public class Application {
+  public static void main(String[] args) {
+    SpringApplication.run(Application.class);
+  }
+}
+```
+
+Distributed scheduling (use database lock to prevent duplicate execution across instances):
+```java
+@Scheduled(fixedRate = 60000)
+public void scheduledTask() {
+  // Acquire lock in database before executing
+  if (lockService.acquireLock("cleanup-task")) {
+    try {
+      cleanupOrders();
+    } finally {
+      lockService.releaseLock("cleanup-task");
+    }
+  }
+}
+```
+
+Benefit: simple periodic tasks without external tools.
+
+Pitfall: blocking task delays subsequent scheduled tasks; use async with @Async.
+
+---
+
+### Q365: Explain multi-tenancy in SaaS applications.
+
+Multi-tenancy: single application instance serves multiple customers (tenants), with isolated data.
+
+Approaches:
+
+1. Database per tenant (strong isolation):
+   ```java
+   @Component
+   public class TenantContextFilter implements Filter {
+     public void doFilter(ServletRequest req, ServletResponse res, FilterChain chain) {
+       String tenantId = req.getParameter("tenant_id");
+       TenantContext.setCurrentTenant(tenantId);
+       chain.doFilter(req, res);
+       TenantContext.clear();
+     }
+   }
+   
+   @Configuration
+   public class DataSourceConfig {
+     @Bean
+     public DataSource dataSource(TenantResolver tenantResolver) {
+       return new AbstractRoutingDataSource() {
+         protected Object determineCurrentLookupKey() {
+           return TenantContext.getCurrentTenant();
+         }
+       };
+     }
+   }
+   ```
+
+2. Schema per tenant (shared infrastructure, isolated schema).
+
+3. Row-level security (shared table, filter by tenant_id via Hibernate filters).
+
+Trade-off: database isolation (complex ops), row-level security (simpler ops, risk of data leakage).
+
+Pitfall: forgetting to filter by tenant_id in queries.
+
+---
+
+### Q366: What are database migrations (Flyway/Liquibase)?
+
+Flyway automates database schema versioning and migrations.
+
+Migration file: src/main/resources/db/migration/V1__Create_order_table.sql
+```sql
+CREATE TABLE orders (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  user_id BIGINT NOT NULL,
+  amount DECIMAL(10, 2),
+  status VARCHAR(50),
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+V2__Add_payment_method.sql:
+```sql
+ALTER TABLE orders ADD COLUMN payment_method VARCHAR(50);
+```
+
+Configuration:
+```yaml
+spring:
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baselineOnMigrate: true
+```
+
+Flyway auto-runs on startup, tracking executed migrations in flyway_schema_history table.
+
+Benefits: version control, repeatable deployments, rollback capability (create reverse migration).
+
+Pitfall: complex migrations require testing; avoid irreversible operations (like DROP COLUMN without backup).
+
+---
+
+### Q367: What are Spring testing annotations?
+
+@SpringBootTest: full context (slow, comprehensive).
+@WebMvcTest: web layer only (fast, for controllers).
+@DataJpaTest: JPA layer only (fast, for repositories).
+@MockBean: replace bean with mock (inject mock via constructor).
+@SpyBean: partial mock (call real methods unless overridden).
+
+Example:
+```java
+@WebMvcTest(OrderController.class)
+public class OrderControllerTest {
+  @Autowired MockMvc mockMvc;
+  @MockBean OrderService orderService;
+  
+  @Test
+  public void testGetOrder() throws Exception {
+    when(orderService.getOrder(1L)).thenReturn(new Order(1, 100));
+    mockMvc.perform(get("/orders/1"))
+      .andExpect(status().isOk())
+      .andExpect(jsonPath("$.amount").value(100));
+  }
+}
+
+@DataJpaTest
+public class OrderRepositoryTest {
+  @Autowired OrderRepository orderRepository;
+  
+  @Test
+  public void testFindByUserId() {
+    Order order = new Order(userId=1, amount=50);
+    orderRepository.save(order);
+    List<Order> found = orderRepository.findByUserId(1);
+    assertThat(found).hasSize(1);
+  }
+}
+```
+
+Benefit: fast feedback, isolated testing.
+
+Pitfall: @MockBean requires full context; use @WebMvcTest for speed.
+
+---
+
+### Q368: What are conditional bean creation strategies?
+
+@ConditionalOnProperty, @ConditionalOnClass, @ConditionalOnMissingBean enable feature flags.
+
+Example:
+```java
+@Configuration
+public class FeatureConfig {
+  @Bean
+  @ConditionalOnProperty(name = "feature.payment.enabled", havingValue = "true")
+  public PaymentService paymentService() {
+    return new RealPaymentService();
+  }
+  
+  @Bean
+  @ConditionalOnProperty(name = "feature.payment.enabled", havingValue = "false", matchIfMissing = true)
+  public PaymentService noOpPaymentService() {
+    return new NoOpPaymentService();
+  }
+}
+```
+
+@ConditionalOnClass (bean only if class on classpath):
+```java
+@ConditionalOnClass(name = "com.stripe.Stripe")
+@Bean
+public StripePaymentProvider stripeProvider() {
+  return new StripePaymentProvider();
+}
+```
+
+Benefit: feature toggles, environment-specific beans without code changes.
+
+Pitfall: multiple conditional beans compete; ensure exactly one matches.
+
+---
+
+### Q369: What REST client patterns exist?
+
+RestTemplate (blocking, synchronous):
+```java
+@Service
+public class PaymentClient {
+  @Autowired RestTemplate restTemplate;
+  
+  public PaymentResponse charge(Order order) throws RestClientException {
+    String url = "http://payment-service/charge";
+    HttpHeaders headers = new HttpHeaders();
+    headers.setContentType(MediaType.APPLICATION_JSON);
+    
+    PaymentRequest request = new PaymentRequest(order.getId(), order.getAmount());
+    HttpEntity<PaymentRequest> entity = new HttpEntity<>(request, headers);
+    
+    ResponseEntity<PaymentResponse> response = restTemplate.exchange(
+      url, HttpMethod.POST, entity, PaymentResponse.class);
+    return response.getBody();
+  }
+}
+```
+
+WebClient (non-blocking, reactive):
+```java
+@Service
+public class PaymentClientReactive {
+  @Autowired WebClient webClient;
+  
+  public Mono<PaymentResponse> chargeAsync(Order order) {
+    return webClient.post()
+      .uri("http://payment-service/charge")
+      .contentType(MediaType.APPLICATION_JSON)
+      .bodyValue(new PaymentRequest(order.getId(), order.getAmount()))
+      .retrieve()
+      .bodyToMono(PaymentResponse.class);
+  }
+}
+```
+
+Resilience:
+```java
+@Service
+public class ResilientPaymentClient {
+  @Autowired WebClient webClient;
+  
+  @CircuitBreaker(name = "paymentService")
+  public Mono<PaymentResponse> chargeWithCircuitBreaker(Order order) {
+    return webClient.post()
+      .uri("http://payment-service/charge")
+      .bodyValue(order)
+      .retrieve()
+      .onStatus(is4xxClientError(), res -> Mono.error(new ClientException()))
+      .onStatus(is5xxServerError(), res -> Mono.error(new ServerException()))
+      .bodyToMono(PaymentResponse.class)
+      .timeout(Duration.ofSeconds(5));
+  }
+}
+```
+
+Trade-off: RestTemplate is synchronous (simpler), WebClient is reactive (higher throughput).
+
+Pitfall: timeout configuration essential; default infinite wait causes resource exhaustion.
+
+---
+
+### Q370: What are Stream API and lambda expression best practices?
+
+Stream API enables declarative data processing. Lambdas provide functional syntax.
+
+Example:
+```java
+List<Order> orders = orderRepository.findAll();
+
+// Filter, map, collect
+List<Double> amounts = orders.stream()
+  .filter(o -> o.getStatus().equals("COMPLETED"))
+  .map(Order::getAmount)
+  .collect(Collectors.toList());
+
+// Group by
+Map<String, List<Order>> byUser = orders.stream()
+  .collect(Collectors.groupingBy(Order::getUserId));
+
+// Parallel processing (caution: overhead for small datasets)
+long total = orders.parallelStream()
+  .filter(o -> o.getAmount() > 100)
+  .count();
+```
+
+Best practices:
+- Use method references (Order::getAmount) over lambdas for readability
+- Avoid stateful lambdas (use state variables carefully in parallel streams)
+- Intermediate operations are lazy; terminal operation triggers evaluation
+
+Pitfall: parallel streams on small lists slower than sequential due to thread overhead.
+
+---
+
+### Q371: What are caching strategies?
+
+Cache-aside: miss → fetch → store
+```java
+@Service
+public class OrderService {
+  @Cacheable(value = "orders", key = "#id")
+  public Order getOrder(Long id) {
+    return orderRepository.findById(id);
+  }
+}
+```
+
+Write-through: update DB and cache synchronously
+```java
+@Service
+public class OrderService {
+  public void updateOrder(Order order) {
+    orderRepository.save(order);
+    cache.put(order.getId(), order);
+  }
+}
+```
+
+Write-behind: update cache, async DB (risk: data loss if crash before DB update)
+```java
+@Service
+public class OrderService {
+  public void updateOrder(Order order) {
+    cache.put(order.getId(), order);
+    asyncExecutor.execute(() -> orderRepository.save(order));
+  }
+}
+```
+
+Distributed cache (Redis):
+```xml
+<dependency>
+  <groupId>org.springframework.boot</groupId>
+  <artifactId>spring-boot-starter-data-redis</artifactId>
+</dependency>
+```
+
+```yaml
+spring:
+  redis:
+    host: localhost
+    port: 6379
+```
+
+Trade-off: cache-aside (simple, miss on first request), write-through (immediate consistency, slower writes), write-behind (fast writes, eventual consistency).
+
+Pitfall: cache invalidation (stale data); use TTL and explicit eviction.
+
+---
+
+### Q372: What are timeout and circuit breaker patterns?
+
+Timeout: abort operation after X seconds, prevent hanging.
+
+Circuit Breaker: track failures, fail-fast when threshold exceeded.
+
+Example (Resilience4j):
+```java
+@Service
+public class PaymentService {
+  private CircuitBreaker circuitBreaker;
+  private Retry retry;
+  private TimeLimiter timeLimiter;
+  
+  public PaymentService() {
+    circuitBreaker = CircuitBreaker.of("paymentService", CircuitBreakerConfig.custom()
+      .slidingWindowSize(10) // track last 10 calls
+      .failureThreshold(50) // 50% failure rate opens circuit
+      .waitDurationInOpenState(Duration.ofSeconds(30))
+      .build());
+    
+    retry = Retry.of("paymentService", RetryConfig.custom()
+      .maxAttempts(3)
+      .waitDuration(Duration.ofSeconds(1))
+      .build());
+    
+    timeLimiter = TimeLimiter.of(TimeLimiterConfig.custom()
+      .timeoutDuration(Duration.ofSeconds(5))
+      .build());
+  }
+  
+  public Payment charge(Order order) {
+    Supplier<Payment> supplier = () -> paymentGateway.charge(order);
+    Supplier<Payment> timed = timeLimiter.decorateSupplier(supplier);
+    Supplier<Payment> retried = retry.decorateSupplier(timed);
+    Supplier<Payment> circuitBreakerDecorated = circuitBreaker.decorateSupplier(retried);
+    
+    return circuitBreakerDecorated.get(); // may throw exception if circuit open
+  }
+}
+```
+
+States:
+- CLOSED: happy path, count failures
+- OPEN: too many failures, reject all calls (fast-fail)
+- HALF_OPEN: test if service recovered, limited calls allowed
+
+Benefit: cascading failure prevention, graceful degradation.
+
+Pitfall: timeout too short causes false positives; too long defeats purpose.
+
+---
+
+### Q373: What is JSON serialization customization?
+
+Use @JsonProperty, @JsonIgnore, custom JsonSerializer.
+
+Example:
+```java
+public class Order {
+  @JsonProperty("order_id") // maps to JSON field "order_id"
+  private Long id;
+  
+  @JsonIgnore
+  private String internalNotes;
+  
+  @JsonFormat(pattern = "yyyy-MM-dd'T'HH:mm:ss")
+  private LocalDateTime createdAt;
+}
+
+// Custom serializer
+public class OrderSerializer extends StdSerializer<Order> {
+  public void serialize(Order order, JsonGenerator jgen, SerializerProvider provider) {
+    jgen.writeStartObject();
+    jgen.writeNumberField("id", order.getId());
+    jgen.writeStringField("status", order.getStatus().toUpperCase());
+    jgen.writeEndObject();
+  }
+}
+
+// Register
+@Configuration
+public class JacksonConfig {
+  @Bean
+  SimpleModule customModule() {
+    SimpleModule module = new SimpleModule();
+    module.addSerializer(Order.class, new OrderSerializer());
+    return module;
+  }
+}
+```
+
+Benefit: API contract control, backward compatibility.
+
+Pitfall: over-customization complicates maintenance.
+
+---
+
+### Q374: What is Lombok and what annotations does it provide?
+
+Lombok auto-generates boilerplate code via annotations.
+
+@Data: @Getter, @Setter, @ToString, @EqualsAndHashCode, @RequiredArgsConstructor
+```java
+@Data
+public class Order {
+  private Long id;
+  private String status;
+  // generates getters, setters, toString(), equals(), hashCode(), constructor(id, status)
+}
+```
+
+@Builder: fluent object creation
+```java
+Order order = Order.builder()
+  .id(1L)
+  .status("PENDING")
+  .build();
+```
+
+@Slf4j: inject SLF4J logger
+```java
+@Service
+@Slf4j
+public class OrderService {
+  public void process(Order order) {
+    log.info("Processing order: {}", order.getId());
+  }
+}
+```
+
+@AllArgsConstructor, @NoArgsConstructor: constructors.
+
+Benefit: less boilerplate code.
+
+Pitfall: IDE support required (annotation processing); generated code not visible in editor.
+
+---
+
+### Q375: What are Optional best practices?
+
+Optional wraps nullable values, preventing NullPointerException.
+
+Example:
+```java
+Optional<Order> orderOpt = orderRepository.findById(1L);
+
+// Good: explicit handling
+Order order = orderOpt.orElseThrow(() -> new EntityNotFoundException());
+
+// Good: use ifPresent
+orderOpt.ifPresent(o -> log.info("Found order: {}", o.getId()));
+
+// Good: map
+String status = orderOpt.map(Order::getStatus).orElse("UNKNOWN");
+
+// Bad: avoid get() without isPresent() check
+Order order = orderOpt.get(); // throws NoSuchElementException if empty
+
+// Bad: avoid Optional in parameters
+public void process(Optional<Order> order) { ... } // use nullable instead
+```
+
+Best practices:
+- Use Optional for method returns, not parameters
+- Use map/flatMap for transformations
+- Use orElse/orElseGet for defaults
+- Use filter to narrow values
+
+Benefit: explicit null handling, compiler-checkable.
+
+Pitfall: overusing Optional (in parameters, fields) adds noise.
+
+---
+
+### Q376: What are dependency injection best practices?
+
+Constructor injection (preferred, testable, immutable):
+```java
+@Service
+public class OrderService {
+  private final OrderRepository orderRepository;
+  private final PaymentService paymentService;
+  
+  public OrderService(OrderRepository orderRepository, PaymentService paymentService) {
+    this.orderRepository = orderRepository;
+    this.paymentService = paymentService;
+  }
+}
+```
+
+Field injection (discouraged, not testable):
+```java
+@Service
+public class OrderService {
+  @Autowired OrderRepository orderRepository; // discouraged
+}
+```
+
+Setter injection (less preferred):
+```java
+@Service
+public class OrderService {
+  private OrderRepository orderRepository;
+  
+  @Autowired
+  public void setOrderRepository(OrderRepository orderRepository) {
+    this.orderRepository = orderRepository;
+  }
+}
+```
+
+Best practices:
+- Use constructor injection for required dependencies
+- Mark fields final to prevent reassignment
+- Avoid circular dependencies (A → B → A)
+
+Pitfall: constructor injection with 10+ parameters (sign of God object); refactor.
+
+---
+
+### Q377: What is Bean Validation API?
+
+Bean Validation provides annotations (@NotNull, @Email, etc.) and custom validators.
+
+Example:
+```java
+public class Order {
+  @NotNull(message = "ID required")
+  private Long id;
+  
+  @Positive(message = "Amount must be positive")
+  private double amount;
+  
+  @Pattern(regexp = "PENDING|COMPLETED|CANCELLED")
+  private String status;
+}
+
+@RestController
+@RequestMapping("/orders")
+public class OrderController {
+  @PostMapping
+  public ResponseEntity<Order> createOrder(@Valid @RequestBody Order order) {
+    // validation happens automatically; 400 Bad Request if invalid
+    return ResponseEntity.ok(orderService.create(order));
+  }
+}
+```
+
+Custom validator:
+```java
+@Target(ElementType.FIELD)
+@Retention(RetentionPolicy.RUNTIME)
+@Constraint(validatedBy = CurrencyValidator.class)
+public @interface ValidCurrency {
+  String message() default "Invalid currency";
+  Class<?>[] groups() default {};
+  Class<? extends Payload>[] payload() default {};
+}
+
+public class CurrencyValidator implements ConstraintValidator<ValidCurrency, String> {
+  public boolean isValid(String value, ConstraintValidatorContext context) {
+    return value == null || Arrays.asList("USD", "EUR", "GBP").contains(value);
+  }
+}
+```
+
+Benefit: standardized validation, reduced boilerplate.
+
+Pitfall: validation messages not user-friendly; customize error responses.
+
+---
+
+### Q378: What is connection pooling (HikariCP)?
+
+Connection pooling reuses database connections, reducing overhead.
+
+Example (HikariCP configuration):
+```yaml
+spring:
+  datasource:
+    hikari:
+      minimumIdle: 5 # idle connections kept alive
+      maximumPoolSize: 20 # max concurrent connections
+      idleTimeout: 600000 # 10 minutes before closing idle connection
+      maxLifetime: 1800000 # 30 minutes max connection lifetime
+      connectionTimeout: 30000 # 30 seconds to acquire connection
+```
+
+How it works:
+1. Create connection pool (size: 5–20) on startup
+2. Request connection from pool (fast)
+3. Use connection
+4. Return to pool (not close)
+5. Reuse on next request
+
+Benefit: reduced latency (no connection creation), resource efficiency.
+
+Pitfall: connections leak if not returned; use try-with-resources or Spring's template classes.
+
+---
+
+### Q379: What are memory management and garbage collection strategies?
+
+Heap sizing determines GC performance.
+
+Example:
+```bash
+java -Xms1g -Xmx4g -XX:+UseG1GC application.jar
+# -Xms: initial heap (1GB)
+# -Xmx: max heap (4GB)
+# G1GC: generational garbage collector
+```
+
+Garbage collectors:
+- Serial GC: single thread, suitable for small applications
+- Parallel GC: multiple threads, suitable for batch processing
+- G1GC (default): low-pause, suitable for large heaps and low-latency requirements
+- ZGC: ultra-low pause (< 1ms), for large heaps (experimental)
+
+Monitor GC:
+```bash
+java -XX:+PrintGCDetails -XX:+PrintGCDateStamps -Xloggc:/tmp/gc.log application.jar
+```
+
+Memory leak prevention:
+- Avoid unclosed resources (streams, connections)
+- Unbounded caches (use Caffeine with size limits)
+- Static collections holding references
+
+Benefit: optimized performance, reduced latency.
+
+Pitfall: GC pause time increases with large heaps; balance heap size and frequency.
+
+---
+
+### Q380: What are design patterns in microservices?
+
+API Gateway: single entry point (routing, auth, rate limiting)
+Service Locator: discover services dynamically
+Circuit Breaker: fail-fast on unavailable service
+Saga: distributed transaction
+CQRS: separate read/write models
+Event Sourcing: immutable event log
+Bulkhead: thread pool isolation per resource
+
+Example (API Gateway pattern):
+```java
+@RestController
+@RequestMapping("/api")
+public class ApiGateway {
+  @GetMapping("/orders/{id}")
+  public ResponseEntity<Order> getOrder(@PathVariable Long id) {
+    return orderServiceClient.getOrder(id);
+  }
+  
+  @GetMapping("/payments/{id}")
+  public ResponseEntity<Payment> getPayment(@PathVariable Long id) {
+    return paymentServiceClient.getPayment(id);
+  }
+}
+```
+
+Benefit: decoupling, cross-cutting concern management.
+
+Pitfall: gateway becomes bottleneck; ensure scalability.
+
+---
+
+### Q381: What are cost optimization strategies?
+
+Reserved instances: pre-pay for capacity, save 40–60% vs. on-demand
+Spot instances: unused capacity at discount, suitable for batch jobs
+Auto-scaling: scale down during off-peak hours
+Resource tagging: track costs per team/project
+Database: use read replicas only when needed, storage optimization
+
+Example (ECS/K8s cost optimization):
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: order-service
+spec:
+  containers:
+  - name: order-service
+    image: order-service:latest
+    resources:
+      requests:
+        memory: "256Mi" # guaranteed minimum
+        cpu: "250m"
+      limits:
+        memory: "512Mi" # hard limit before eviction
+        cpu: "500m"
+```
+
+Benefit: reduced cloud spending.
+
+Pitfall: over-aggressive cost optimization causes performance degradation.
+
+---
+
+### Q382: What are bulk operations and batch insert patterns?
+
+Batch insert reduces database round-trips.
+
+Example (JPA batch insert):
+```java
+@Service
+public class OrderService {
+  @Autowired OrderRepository orderRepository;
+  
+  public void importOrders(List<Order> orders) {
+    int batchSize = 1000;
+    for (int i = 0; i < orders.size(); i += batchSize) {
+      List<Order> batch = orders.subList(i, Math.min(i + batchSize, orders.size()));
+      orderRepository.saveAll(batch);
+      // flush to database every 1000 records
+    }
+  }
+}
+```
+
+Enable batch settings in properties:
+```yaml
+spring:
+  jpa:
+    hibernate:
+      jdbc:
+        batch_size: 1000
+        fetch_size: 1000
+      order_inserts: true
+      order_updates: true
+```
+
+Benefit: 10–50x performance improvement for bulk operations.
+
+Pitfall: memory usage increases with large batches; tune batch size.
+
+---
+
+### Q383: What is OpenTelemetry integration?
+
+OpenTelemetry provides unified observability API (traces, metrics, logs).
+
+Example (Spring Boot with OpenTelemetry):
+```xml
+<dependency>
+  <groupId>io.opentelemetry.instrumentation</groupId>
+  <artifactId>opentelemetry-spring-boot-starter</artifactId>
+  <version>0.35.0</version>
+</dependency>
+```
+
+Configuration:
+```yaml
+otel:
+  exporter:
+    otlp:
+      endpoint: http://jaeger:4317 # OTEL collector
+  sdk:
+    disabled: false
+```
+
+Custom instrumentation:
+```java
+@Component
+public class OrderServiceObservable {
+  private static final Tracer tracer = GlobalOpenTelemetry.getTracer("order-service");
+  
+  @Autowired OrderRepository orderRepository;
+  
+  public Order getOrder(Long id) {
+    Span span = tracer.spanBuilder("getOrder").setAttribute("order.id", id).startSpan();
+    try (Scope scope = span.makeCurrent()) {
+      return orderRepository.findById(id);
+    } finally {
+      span.end();
+    }
+  }
+}
+```
+
+Benefit: vendor-neutral observability, standardized instrumentation.
+
+Pitfall: overhead; use sampling for high-throughput services.
+
+---
+
+### Q384: How do you mock external services in tests?
+
+WireMock (HTTP mocking):
+```java
+@SpringBootTest
+public class OrderServiceTest {
+  @RegisterExtension
+  static WireMockExtension wireMock = WireMockExtension.newInstance()
+    .options(wireMockConfig().port(8899))
+    .build();
+  
+  @BeforeEach
+  public void setup() {
+    wireMock.stubFor(get(urlEqualTo("/payments/charge"))
+      .willReturn(aResponse()
+        .withStatus(200)
+        .withBody("{\"status\": \"SUCCESS\"}")));
+  }
+  
+  @Test
+  public void testChargePayment() {
+    Payment payment = paymentClient.charge(order);
+    assertThat(payment.getStatus()).isEqualTo("SUCCESS");
+  }
+}
+```
+
+Testcontainers (container-based mocking):
+```java
+@SpringBootTest
+public class OrderServiceIntegrationTest {
+  @Container
+  static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>(DockerImageName.parse("postgres:latest"));
+  
+  @Test
+  public void testOrderPersistence() {
+    Order order = new Order(1, 100);
+    orderRepository.save(order);
+    Order found = orderRepository.findById(1);
+    assertThat(found.getAmount()).isEqualTo(100);
+  }
+}
+```
+
+Benefit: realistic mocking, integration testing without full services.
+
+Pitfall: containers add test startup overhead; use judiciously.
+
+---
+
+### Q385: What is backpressure in reactive streams?
+
+Backpressure: consumer signals demand, producer adapts production rate.
+
+Example (Flux with limited subscription):
+```java
+Flux<Integer> numbers = Flux.range(1, 1000);
+
+numbers
+  .subscribeOn(Schedulers.parallel())
+  .publishOn(Schedulers.boundedElastic()) // consumer slower than producer
+  .subscribe(
+    item -> {
+      Thread.sleep(1000); // slow consumer
+      log.info("Received: {}", item);
+    },
+    error -> log.error("Error", error),
+    () -> log.info("Complete")
+  );
+// Backpressure: producer slows down to match consumer's pace
+```
+
+Without backpressure (unbounded Flux):
+- Fast producer floods slow consumer
+- Memory exhaustion (buffering all items)
+
+With backpressure:
+- Consumer requests N items
+- Producer emits only N items
+- Memory stays bounded
+
+Benefit: resource efficiency, prevents OutOfMemoryError.
+
+Pitfall: backpressure not automatic; both sides must implement reactive contract.
+
+---
+
+### Q386: Spring Cloud Hystrix vs. Resilience4j comparison.
+
+Hystrix (legacy):
+- Integrated with Spring Cloud (easy setup)
+- Thread pool isolation (bulkhead pattern)
+- Circuit breaker, retry, timeout
+
+Resilience4j (modern, recommended):
+- Lightweight, functional programming style
+- Decorator pattern (composable)
+- Metrics integration (Micrometer)
+- No thread pool overhead (functional approach)
+
+Example migration (Hystrix → Resilience4j):
+```java
+// Hystrix (deprecated)
+@HystrixCommand(fallbackMethod = "fallback", commandProperties = {
+  @HystrixProperty(name = "execution.isolation.thread.timeoutInMilliseconds", value = "5000")
+})
+public Payment charge(Order order) { ... }
+
+// Resilience4j (modern)
+@CircuitBreaker(name = "paymentService")
+@Retry(name = "paymentService")
+@Timeout(name = "paymentService")
+public Payment charge(Order order) { ... }
+```
+
+Recommendation: use Resilience4j for new projects.
+
+Pitfall: Hystrix in maintenance mode; migrate existing code.
+
+---
+
+### Q387: What is Spring Cloud Eureka (service discovery)?
+
+Eureka enables dynamic service discovery (service registers heartbeat, clients discover registry).
+
+Server setup:
+```java
+@SpringBootApplication
+@EnableEurekaServer
+public class EurekaServer {
+  public static void main(String[] args) {
+    SpringApplication.run(EurekaServer.class);
+  }
+}
+```
+
+Client registration:
+```yaml
+spring:
+  application:
+    name: order-service
+eureka:
+  client:
+    serviceUrl:
+      defaultZone: http://eureka-server:8761/eureka
+  instance:
+    instanceId: ${spring.application.name}:${spring.application.instance-id:${random.value}}
+```
+
+Access registered services:
+```java
+@Service
+public class PaymentClient {
+  @Autowired RestTemplate restTemplate;
+  
+  public Payment charge(Order order) {
+    // RestTemplate auto-resolves payment-service via Eureka
+    return restTemplate.getForObject("http://payment-service/charge", Payment.class);
+  }
+}
+```
+
+Benefit: dynamic service registry (scale services without code changes).
+
+Pitfall: Eureka eventually consistent (heartbeat misses → delayed removal).
+
+---
+
+### Q388: What is Vault for secrets management?
+
+Vault centrally manages secrets (API keys, database passwords, certificates).
+
+Example (Vault integration):
+```yaml
+spring:
+  cloud:
+    vault:
+      host: vault.example.com
+      port: 8200
+      token: s.xxxxxxx
+      kv:
+        enabled: true
+        backend: secret
+        version: 2
+```
+
+Retrieve secrets:
+```java
+@Service
+public class PaymentGatewayConfig {
+  @Value("${vault.gateway.api-key}")
+  private String apiKey; // injected from Vault
+  
+  public PaymentGateway createGateway() {
+    return new PaymentGateway(apiKey);
+  }
+}
+```
+
+Vault stores:
+```json
+{
+  "data": {
+    "api_key": "sk_live_xxxxx",
+    "api_secret": "sk_secret_xxxxx"
+  }
+}
+```
+
+Benefit: centralized secret management, rotation without code changes.
+
+Pitfall: Vault availability critical; ensure HA setup.
+
+---
+
+### Q389: How does rate limiting work at API Gateway level?
+
+API Gateway (Spring Cloud Gateway) rate limits using token bucket algorithm.
+
+Example:
+```yaml
+spring:
+  cloud:
+    gateway:
+      routes:
+      - id: order-service
+        uri: http://order-service:8080
+        predicates:
+        - Path=/orders/**
+        filters:
+        - name: RequestRateLimiter
+          args:
+            redis-rate-limiter:
+              replenishRate: 10 # 10 requests per second
+              burstCapacity: 20 # burst to 20 requests
+```
+
+How it works:
+1. Each user has token bucket (capacity: 20 tokens)
+2. Bucket refills at 10 tokens/second
+3. Each request consumes 1 token
+4. If bucket empty, request rejected (429 Too Many Requests)
+
+Custom rate limiter (key-resolver):
+```java
+@Configuration
+public class GatewayConfig {
+  @Bean
+  public KeyResolver userKeyResolver() {
+    return exchange -> Mono.just(
+      exchange.getRequest().getHeaders().getFirst("X-User-Id")
+    );
+  }
+}
+```
+
+Benefit: prevents abuse, ensures fair usage.
+
+Pitfall: rate limit too strict causes legitimate client rejection; too lenient defeats purpose.
+
+---
+
+### Q390: What is content negotiation in REST APIs?
+
+Content negotiation: server returns response format (JSON, XML) based on client request.
+
+Accept header: request format
+```
+Accept: application/json
+Accept: application/xml
+Accept: application/json;charset=UTF-8
+```
+
+Spring handles content negotiation:
+```java
+@RestController
+@RequestMapping("/orders")
+public class OrderController {
+  @GetMapping("/{id}", produces = { MediaType.APPLICATION_JSON_VALUE, MediaType.APPLICATION_XML_VALUE })
+  public Order getOrder(@PathVariable Long id) {
+    return orderService.getOrder(id);
+  }
+}
+```
+
+Client requests JSON:
+```bash
+curl -H "Accept: application/json" http://localhost:8080/orders/1
+Response: { "id": 1, "status": "PENDING" }
+```
+
+Client requests XML:
+```bash
+curl -H "Accept: application/xml" http://localhost:8080/orders/1
+Response: <Order><id>1</id><status>PENDING</status></Order>
+```
+
+Benefit: single API serves multiple formats.
+
+Pitfall: maintenance burden (support multiple formats); JSON-only preferable.
+
+---
+
+### Q391: What are HTTPS and certificate pinning?
+
+HTTPS (TLS) encrypts communication. Certificate pinning validates server identity.
+
+Enable HTTPS:
+```properties
+server.ssl.key-store=classpath:keystore.jks
+server.ssl.key-store-password=password
+server.ssl.key-store-type=JKS
+server.ssl.key-alias=tomcat
+```
+
+Certificate pinning (prevent MITM attacks):
+```java
+@Configuration
+public class RestClientPinning {
+  @Bean
+  public RestTemplate restTemplate() {
+    // Pin certificate hash (validate server cert matches expected hash)
+    X509Certificate cert = loadCertificate();
+    String expectedSha256 = "abc123def456...";
+    
+    HttpClient httpClient = HttpClients.custom()
+      .setSSLContext(createCustomSSLContext(expectedSha256))
+      .build();
+    
+    return new RestTemplate(new HttpComponentsClientHttpRequestFactory(httpClient));
+  }
+}
+```
+
+Benefit: prevents MITM (man-in-the-middle) attacks.
+
+Pitfall: certificate pinning limits flexibility; renewal requires code update.
+
+---
+
+### Q392: What is graceful degradation in microservices?
+
+Graceful degradation: reduce functionality rather than fail completely.
+
+Example (payment service unavailable):
+```java
+@Service
+public class OrderService {
+  @Autowired PaymentClient paymentClient;
+  @Autowired CacheService cache;
+  
+  @CircuitBreaker(name = "paymentService", fallbackMethod = "degradedPaymentFlow")
+  public Order createOrder(CreateOrderRequest request) {
+    String paymentId = paymentClient.initiatePayment(request.getAmount());
+    return new Order(request, paymentId);
+  }
+  
+  public Order degradedPaymentFlow(CreateOrderRequest request, Exception e) {
+    // Payment service down; create order with PENDING_PAYMENT status
+    // Manual payment processing later
+    Order order = new Order(request, null);
+    order.setStatus("PENDING_PAYMENT");
+    cache.save("pending_orders", order.getId, order);
+    return order;
+  }
+}
+```
+
+Strategies:
+- Serve cached data if DB unavailable
+- Disable non-critical features
+- Queue requests for later processing
+- Return partial data
+
+Benefit: resilience to service failures.
+
+Pitfall: degraded mode complexity; ensure consistent state.
+
+---
+
+### Q393: What is polyglot persistence?
+
+Polyglot persistence: use different databases for different use cases.
+
+Example architecture:
+- User service: PostgreSQL (relational, ACID)
+- Product catalog: Elasticsearch (full-text search)
+- Session cache: Redis (fast, in-memory)
+- Time-series metrics: InfluxDB (optimized for metrics)
+- Graph relationships: Neo4j (graph queries)
+
+Implementation:
+```java
+@Service
+public class OrderService {
+  @Autowired OrderRepository orderRepository; // PostgreSQL
+  @Autowired ProductSearchClient productSearch; // Elasticsearch
+  @Autowired CacheService cache; // Redis
+  
+  public Order createOrder(CreateOrderRequest request) {
+    // Persist order in PostgreSQL
+    Order order = orderRepository.save(new Order(request));
+    
+    // Cache order in Redis
+    cache.set("order:" + order.getId(), order, Duration.ofHours(1));
+    
+    // Index in Elasticsearch for analytics
+    searchService.index("orders", order);
+    
+    return order;
+  }
+}
+```
+
+Trade-off: flexibility (right tool for job), but operational complexity (manage multiple databases).
+
+Pitfall: data consistency across databases; use event-driven sync.
+
+---
+
+### Q394: What are feature toggles with gradual rollout?
+
+Feature toggle: flag controls feature behavior without code change. Gradual rollout: enable for % of users.
+
+Example (using FF4j library):
+```xml
+<dependency>
+  <groupId>org.ff4j</groupId>
+  <artifactId>ff4j-spring-boot-starter</artifactId>
+</dependency>
+```
+
+Define toggles:
+```yaml
+ff4j:
+  features:
+    new-payment-gateway:
+      enabled: true
+      description: "Use Stripe instead of legacy gateway"
+      permissions: []
+```
+
+Usage:
+```java
+@Service
+public class PaymentService {
+  @Autowired FF4j ff4j;
+  
+  public Payment charge(Order order) {
+    if (ff4j.check("new-payment-gateway")) {
+      return stripeGateway.charge(order);
+    } else {
+      return legacyGateway.charge(order);
+    }
+  }
+}
+```
+
+Gradual rollout (canary):
+```java
+public boolean isNewPaymentEnabled(String userId) {
+  // enable for 10% of users (hash-based)
+  return userId.hashCode() % 100 < 10;
+}
+```
+
+Benefit: zero-downtime feature deployment, A/B testing.
+
+Pitfall: feature flag debt (accumulate stale toggles); regular cleanup.
+
+---
+
+### Q395: What are correlation IDs and request tracking?
+
+Correlation ID: unique identifier per request, propagates across services for tracing.
+
+Implementation:
+```java
+@Component
+public class CorrelationIdFilter implements Filter {
+  public void doFilter(ServletRequest request, ServletResponse response, FilterChain chain) {
+    String correlationId = request.getHeader("X-Trace-Id");
+    if (correlationId == null) {
+      correlationId = UUID.randomUUID().toString();
+    }
+    
+    MDC.put("correlationId", correlationId); // Mapped Diagnostic Context
+    response.addHeader("X-Trace-Id", correlationId);
+    
+    try {
+      chain.doFilter(request, response);
+    } finally {
+      MDC.remove("correlationId");
+    }
+  }
+}
+```
+
+Pass to downstream services:
+```java
+@Service
+public class PaymentClient {
+  public Payment charge(Order order) {
+    String correlationId = MDC.get("correlationId");
+    
+    return webClient.post()
+      .uri("http://payment-service/charge")
+      .header("X-Trace-Id", correlationId) // propagate ID
+      .bodyValue(order)
+      .retrieve()
+      .bodyToMono(Payment.class)
+      .block();
+  }
+}
+```
+
+Logging (correlation ID in logs):
+```log
+2024-01-15T10:30:45Z [traceId=abc123] OrderService: Creating order
+2024-01-15T10:30:46Z [traceId=abc123] PaymentService: Charging payment
+2024-01-15T10:30:47Z [traceId=abc123] NotificationService: Sending confirmation
+```
+
+Benefit: end-to-end request tracing, debugging distributed issues.
+
+Pitfall: ensure all services propagate correlation ID; async operations lose context.
+
+---
+
+### Q396: What is database query profiling?
+
+Query profiling identifies slow queries, optimization opportunities.
+
+Enable query logging:
+```yaml
+logging:
+  level:
+    org.hibernate.SQL: DEBUG
+    org.hibernate.type.descriptor.sql.BasicBinder: TRACE
+```
+
+Output:
+```sql
+SELECT order0_.id AS id1_0_, order0_.amount AS amount2_0_, order0_.status AS status3_0_
+FROM orders order0_
+WHERE order0_.user_id=?
+```
+
+Use EXPLAIN ANALYZE (PostgreSQL):
+```sql
+EXPLAIN ANALYZE SELECT * FROM orders WHERE user_id = 1;
+Seq Scan on orders (cost=0.00..35.50 rows=1)
+Filter: (user_id = 1)
+```
+
+Add index:
+```sql
+CREATE INDEX idx_orders_user_id ON orders(user_id);
+```
+
+Re-run EXPLAIN:
+```sql
+Index Scan using idx_orders_user_id (cost=0.28..8.29 rows=1)
+```
+
+Tools: Spring DataSource Spy, Hibernate Statistics, p6spy (JDBC proxy).
+
+Benefit: performance optimization insights.
+
+Pitfall: profiling overhead; disable in production or use sampling.
+
+---
+
+### Q397: What is Spring Cloud LoadBalancer?
+
+Spring Cloud LoadBalancer provides client-side load balancing across service instances.
+
+Configuration:
+```yaml
+spring:
+  cloud:
+    loadbalancer:
+      ribbon:
+        enabled: false
+      nacos: # or eureka
+        enabled: true
+```
+
+Usage with RestTemplate:
+```java
+@Configuration
+public class RestTemplateConfig {
+  @Bean
+  @LoadBalanced
+  public RestTemplate restTemplate() {
+    return new RestTemplate();
+  }
+}
+
+@Service
+public class PaymentClient {
+  @Autowired
+  @LoadBalanced
+  RestTemplate restTemplate;
+  
+  public Payment charge(Order order) {
+    // Automatically load-balanced across payment-service instances
+    return restTemplate.postForObject("http://payment-service/charge", order, Payment.class);
+  }
+}
+```
+
+Load balancing strategies:
+- Round-robin (default)
+- Random
+- Least request
+- Weighted round-robin
+
+Benefit: client-side balancing (no gateway overhead), service discovery integration.
+
+Pitfall: clients must implement load balancing; server-side gateway simpler.
+
+---
+
+### Q398: What are concurrent request handling and async/await patterns?
+
+Async processing improves throughput by handling multiple requests concurrently.
+
+@Async:
+```java
+@Service
+public class OrderService {
+  @Async
+  public void processOrderAsync(Order order) {
+    // Runs in thread pool, doesn't block caller
+    paymentService.charge(order);
+    notificationService.sendConfirmation(order);
+  }
+}
+
+@RestController
+public class OrderController {
+  @PostMapping("/orders")
+  public ResponseEntity<Order> createOrder(@RequestBody Order order) {
+    Order created = orderService.createOrder(order);
+    orderService.processOrderAsync(created); // async background processing
+    return ResponseEntity.ok(created);
+  }
+}
+```
+
+CompletableFuture (composition):
+```java
+public CompletableFuture<Order> createOrderAsync(Order order) {
+  return CompletableFuture.supplyAsync(() -> orderService.create(order))
+    .thenCompose(createdOrder -> paymentService.chargeAsync(createdOrder))
+    .thenCompose(paidOrder -> notificationService.sendAsync(paidOrder));
+}
+```
+
+Reactive (WebFlux):
+```java
+@GetMapping("/orders/{id}")
+public Mono<Order> getOrderReactive(@PathVariable Long id) {
+  return orderRepository.findById(id); // non-blocking
+}
+```
+
+Benefit: higher concurrency, better throughput.
+
+Pitfall: async introduces complexity (error handling, thread context loss); use judiciously.
+
+---
+
+### Q399: What is idempotency in API design?
+
+Idempotency: repeated requests produce same result (safe to retry).
+
+Implementation (deduplication key):
+```java
+@RestController
+@RequestMapping("/orders")
+public class OrderController {
+  @PostMapping
+  public ResponseEntity<Order> createOrder(
+    @RequestHeader("Idempotency-Key") String idempotencyKey,
+    @RequestBody CreateOrderRequest request) {
+    
+    // Check if request already processed
+    Order existingOrder = orderService.findByIdempotencyKey(idempotencyKey);
+    if (existingOrder != null) {
+      return ResponseEntity.ok(existingOrder); // idempotent response
+    }
+    
+    // Process new request
+    Order order = orderService.createOrder(idempotencyKey, request);
+    return ResponseEntity.status(201).body(order);
+  }
+}
+```
+
+Store idempotency key with result:
+```java
+@Entity
+public class Order {
+  @Id private Long id;
+  @Column(unique = true) private String idempotencyKey; // unique constraint
+  private String status;
+}
+```
+
+HTTP methods:
+- GET: idempotent (side-effect free)
+- PUT: idempotent (replace resource)
+- DELETE: idempotent (idempotent key prevents duplicate deletion)
+- POST: NOT idempotent (unless deduplication implemented)
+
+Benefit: safe retries (network failures, timeouts), exactly-once semantics.
+
+Pitfall: storing idempotency keys forever (cost); use TTL.
+
+---
+
+### Q400: What is user-based rate limiting?
+
+User-based rate limiting restricts requests per user (not global).
+
+Example (Redis-backed):
+```java
+@Component
+public class UserRateLimiter {
+  @Autowired StringRedisTemplate redisTemplate;
+  
+  public boolean isAllowed(String userId, int limit) {
+    String key = "rate-limit:" + userId;
+    
+    // Increment user requests
+    Long count = redisTemplate.opsForValue().increment(key);
+    
+    // Set expiration (1 minute window)
+    if (count == 1) {
+      redisTemplate.expire(key, Duration.ofMinutes(1));
+    }
+    
+    return count <= limit;
+  }
+}
+
+@RestController
+@RequestMapping("/orders")
+public class OrderController {
+  @Autowired UserRateLimiter rateLimiter;
+  
+  @GetMapping
+  public ResponseEntity<?> listOrders(@RequestHeader("X-User-Id") String userId) {
+    if (!rateLimiter.isAllowed(userId, 100)) { // 100 requests per minute
+      return ResponseEntity.status(429).body("Rate limit exceeded");
+    }
+    return ResponseEntity.ok(orderService.list());
+  }
+}
+```
+
+Token bucket per user (differentiated limits):
+```java
+public boolean isAllowed(String userId, int tokensPerMinute) {
+  String key = "tokens:" + userId;
+  long tokens = redisTemplate.opsForValue().increment(key, -1);
+  
+  if (tokens < 0) {
+    redisTemplate.opsForValue().increment(key, 1); // refund token
+    return false;
+  }
+  
+  if (tokens == tokensPerMinute - 1) { // first request
+    redisTemplate.expire(key, Duration.ofMinutes(1));
+  }
+  
+  return true;
+}
+```
+
+Benefit: fair usage per user, prevents abuse by individual users.
+
+Pitfall: distributed rate limiting complex (clock skew, race conditions); use mature libraries.
+
+---
+
+## Q401–Q450: Advanced Security, Compliance & Performance
+
+### Q401: What is zero-trust security in microservices?
+
+Zero-trust: assume all requests are untrusted; verify every request regardless of source.
+
+Principles:
+- Never trust, always verify (authentication + authorization on every request)
+- Least privilege (minimal permissions, deny by default)
+- Assume breach (encrypt data at rest & in transit)
+- Continuous monitoring
+
+Implementation:
+```java
+@Configuration
+@EnableWebSecurity
+public class ZeroTrustSecurityConfig {
+  @Bean
+  public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+    http
+      .authorizeHttpRequests(auth -> auth
+        .anyRequest().authenticated()) // all requests must be authenticated
+      .oauth2ResourceServer(oauth2 -> oauth2
+        .jwt(jwt -> jwt.decoder(jwtDecoder())));
+    
+    return http.build();
+  }
+  
+  @Bean
+  public JwtDecoder jwtDecoder() {
+    return NimbusJwtDecoder.withPublicKey(loadPublicKey()).build();
+  }
+}
+```
+
+mTLS (mutual TLS) between services:
+```yaml
+spring:
+  cloud:
+    gateway:
+      routes:
+      - id: order-service
+        uri: https://order-service:8443
+        predicates:
+        - Path=/orders/**
+        metadata:
+          ssl:
+            verify-hostname: true
+            enabled: true
+```
+
+Benefit: defense-in-depth, breach containment.
+
+Pitfall: complexity increases; requires sophisticated identity infrastructure.
+
+---
+
+### Q402: What is secrets rotation and how to implement it?
+
+Secrets rotation: regularly change secrets (API keys, passwords) to minimize breach impact.
+
+Example (Vault-based rotation):
+```java
+@Component
+public class SecretsRotationManager {
+  @Autowired VaultTemplate vaultTemplate;
+  
+  @Scheduled(fixedRate = 2592000000L) // rotate monthly
+  public void rotateApiKeys() {
+    String currentKey = vaultTemplate.read("secret/data/payment/api-key").getData().get("api_key");
+    String newKey = generateNewApiKey();
+    
+    // Update in Vault
+    vaultTemplate.write("secret/data/payment/api-key", Collections.singletonMap("api_key", newKey));
+    
+    // Notify services to reload
+    eventPublisher.publishEvent(new SecretsRotatedEvent("payment-api-key"));
+    
+    // Deactivate old key (grace period for in-flight requests using old key)
+    Thread.sleep(5000);
+    paymentGateway.deactivateApiKey(currentKey);
+  }
+}
+
+@Component
+public class SecretsRefreshListener {
+  @EventListener
+  public void onSecretsRotated(SecretsRotatedEvent event) {
+    // Refresh beans that depend on secrets
+    applicationContext.getBean(PaymentService.class).reloadSecrets();
+  }
+}
+```
+
+Rotation strategies:
+- Time-based: rotate monthly
+- Event-based: rotate on deployment, breach detection
+- Risk-based: rotate for high-risk secrets more frequently
+
+Benefit: limits blast radius of compromised secret.
+
+Pitfall: rotation window (old + new keys) must be managed; not atomic across distributed systems.
+
+---
+
+### Q403: What is GDPR compliance in software systems?
+
+GDPR (General Data Protection Regulation) requirements:
+
+Right to access: users can request data about them
+```java
+@PostMapping("/users/{id}/data-export")
+public ResponseEntity<InputStream> exportUserData(@PathVariable String userId) {
+  User user = userService.findById(userId);
+  InputStream export = userService.exportDataAsJson(user);
+  return ResponseEntity.ok()
+    .header("Content-Disposition", "attachment; filename=user-data.json")
+    .body(export);
+}
+```
+
+Right to be forgotten: deletion on request
+```java
+@DeleteMapping("/users/{id}")
+public ResponseEntity<?> deleteUser(@PathVariable String userId) {
+  userService.anonymizeUser(userId); // remove identifiable data
+  return ResponseEntity.noContent().build();
+}
+```
+
+Data minimization: collect only necessary data
+```java
+public class UserRegistration {
+  @NotNull private String email; // collect
+  @Email private String recoveryEmail; // optional, not required
+  private String phoneNumber; // unnecessary, don't collect
+}
+```
+
+Consent tracking:
+```java
+@Entity
+public class ConsentLog {
+  @Id private UUID id;
+  private String userId;
+  private String consentType; // "marketing", "analytics", "cookies"
+  private boolean granted;
+  private LocalDateTime timestamp;
+}
+```
+
+Benefit: regulatory compliance, user trust.
+
+Pitfall: GDPR enforcement (EU fines 4% of revenue); implement properly from start.
+
+---
+
+### Q404: What is PCI-DSS compliance for payment systems?
+
+PCI-DSS (Payment Card Industry Data Security Standard) protects cardholder data.
+
+Requirements:
+- Never log/store card data (card number, CVV)
+- Tokenize cards (replace with token, store token)
+- Encrypt data in transit & at rest
+- Regular security testing (penetration tests)
+
+Implementation (tokenized payment):
+```java
+@Service
+public class PaymentService {
+  @Autowired StripeGateway stripeGateway;
+  
+  public Payment processPayment(Order order, CardDetails card) {
+    // Tokenize card (Stripe handles card data, returns token)
+    String cardToken = stripeGateway.createToken(card);
+    
+    // Never store or log card details
+    // Store only card token
+    CardTokenEntity cardToken = new CardTokenEntity(cardToken, order.getUserId());
+    cardTokenRepository.save(cardToken);
+    
+    // Charge using token
+    Payment payment = stripeGateway.charge(order.getAmount(), cardToken);
+    return payment;
+  }
+}
+```
+
+Encryption (TDE - Transparent Data Encryption):
+```sql
+ALTER TABLE cards ENCRYPTION BY 'AES_256';
+```
+
+Benefit: PCI-DSS compliance, reduces liability (payment processor handles cardholder data).
+
+Pitfall: compliance is continuous; regular audits & penetration testing required.
+
+---
+
+### Q405: What is audit logging and how to implement it?
+
+Audit logging records who did what, when, for compliance & forensics.
+
+Example:
+```java
+@Entity
+public class AuditLog {
+  @Id private UUID id;
+  private String userId;
+  private String action; // "CREATE_ORDER", "UPDATE_USER", "DELETE_PAYMENT"
+  private String entityType; // "Order", "User"
+  private Long entityId;
+  private String oldValue;
+  private String newValue;
+  private LocalDateTime timestamp;
+  private String ipAddress;
+}
+
+@Component
+public class AuditLoggingAspect {
+  @Autowired AuditLogRepository auditLogRepository;
+  
+  @Around("@annotation(com.example.Audited)")
+  public Object auditMethod(ProceedingJoinPoint joinPoint) throws Throwable {
+    String userId = SecurityContextHolder.getContext().getAuthentication().getName();
+    String action = ((MethodSignature) joinPoint.getSignature()).getMethod().getName();
+    String ipAddress = RequestContextHolder.getRequestAttributes().getRemoteUser();
+    
+    Object result = joinPoint.proceed();
+    
+    AuditLog log = new AuditLog(userId, action, ipAddress, LocalDateTime.now());
+    auditLogRepository.save(log);
+    
+    return result;
+  }
+}
+
+@Service
+public class OrderService {
+  @Audited
+  public Order createOrder(CreateOrderRequest request) {
+    // recorded in audit log
+    return orderRepository.save(new Order(request));
+  }
+}
+```
+
+Immutable audit logs (prevent tampering):
+```java
+@Entity
+@Table(name = "audit_logs")
+public class AuditLog {
+  @CreationTimestamp
+  @Column(updatable = false, nullable = false)
+  private LocalDateTime createdAt; // cannot be updated
+  
+  @Version
+  private Long version; // detects tampering attempts
+}
+```
+
+Benefit: compliance (SOX, HIPAA), forensics, accountability.
+
+Pitfall: audit logs themselves can become attack target; secure separately (separate DB, encryption).
+
+---
+
+### Q406: What is performance profiling and benchmarking?
+
+Performance profiling identifies bottlenecks using tools like JProfiler, YourKit, Async Profiler.
+
+Example (Async Profiler):
+```bash
+# Profile CPU
+asyncProfiler -d 30 -f /tmp/profile.html jps | grep Application
+
+# Profile memory
+asyncProfiler -e alloc -d 30 jps | grep Application
+```
+
+Output: flame graph showing CPU/memory distribution across stack traces.
+
+Benchmarking with JMH (Java Microbenchmark Harness):
+```xml
+<dependency>
+  <groupId>org.openjdk.jmh</groupId>
+  <artifactId>jmh-core</artifactId>
+  <version>1.35</version>
+</dependency>
+```
+
+```java
+@BenchmarkMode(Mode.AverageTime)
+@OutputTimeUnit(TimeUnit.MICROSECONDS)
+@Fork(1)
+@Warmups(3)
+@Measurement(iterations = 10)
+public class OrderServiceBenchmark {
+  @Benchmark
+  public Order createOrder() {
+    Order order = new Order(1L, 100.0, "PENDING");
+    return order;
+  }
+  
+  @Benchmark
+  public List<Order> filterOrders() {
+    List<Order> orders = generateOrders(1000);
+    return orders.stream()
+      .filter(o -> o.getAmount() > 50)
+      .collect(Collectors.toList());
+  }
+}
+```
+
+Run: `java -jar benchmarks.jar -i 10 -wi 3 -f 1`
+
+Benefit: data-driven optimization, regression detection.
+
+Pitfall: microbenchmarks can be misleading (JIT optimizations, warmup); profile real workloads.
+
+---
+
+### Q407: What are Spring Integration module capabilities?
+
+Spring Integration provides messaging & enterprise integration patterns (EIP).
+
+Example (polling channels):
+```java
+@Configuration
+@EnableIntegration
+public class IntegrationConfig {
+  @Bean
+  public IntegrationFlow fileIntegrationFlow() {
+    return IntegrationFlows
+      .from(Files.inboundAdapter(new File("/orders"))
+        .preventDuplicates(true)
+        .filter(f -> f.getName().endsWith(".csv")), c -> c.poller(Pollers.fixedRate(5000)))
+      .transform(msg -> parseOrderFile((File) msg.getPayload()))
+      .handle((payload, headers) -> {
+        orderService.processOrders((List<Order>) payload);
+        return null;
+      })
+      .get();
+  }
+}
+```
+
+Channels:
+- Direct channel: synchronous
+- Queue channel: async, message buffering
+- Publish-subscribe channel: broadcast to multiple handlers
+
+Error handling:
+```java
+@Bean
+public IntegrationFlow errorHandlingFlow() {
+  return IntegrationFlows
+    .from("inputChannel")
+    .errorChannel(c -> c.errorHandler(errorHandler()))
+    .route(new OrderRouter())
+    .get();
+}
+
+@Bean
+public ErrorHandler errorHandler() {
+  return (exception, message) -> {
+    log.error("Error processing message: {}", message, exception);
+    errorRepository.save(new ErrorLog(exception.getMessage(), message));
+  };
+}
+```
+
+Benefit: decouples components, handles asynchronous flows.
+
+Pitfall: complexity increases; use only when needed (Kafka/RabbitMQ may be simpler).
+
+---
+
+### Q408: What are advanced caching strategies (write-through, write-behind, refresh-ahead)?
+
+Write-through: update DB and cache synchronously
+```java
+public void createOrder(Order order) {
+  orderRepository.save(order); // 1. write to DB
+  cache.put(order.getId(), order); // 2. write to cache
+  // if cache write fails, rollback DB write
+}
+```
+
+Write-behind: write to cache immediately, async DB update
+```java
+public void createOrder(Order order) {
+  cache.put(order.getId(), order); // 1. immediate response
+  asyncExecutor.submit(() -> {
+    try {
+      orderRepository.save(order); // 2. async DB write
+    } catch (Exception e) {
+      cache.evict(order.getId()); // 3. rollback cache if DB write fails
+      throw e;
+    }
+  });
+}
+```
+
+Refresh-ahead: proactively refresh cache before expiration
+```java
+@Component
+public class CacheRefreshScheduler {
+  @Scheduled(fixedRate = 60000) // every minute
+  public void refreshHotData() {
+    List<Order> hotOrders = orderRepository.findByStatus("SHIPPING"); // frequently accessed
+    hotOrders.forEach(order -> cache.put("order:" + order.getId(), order, Duration.ofHours(1)));
+  }
+}
+```
+
+Cache hierarchy (L1, L2):
+- L1 (local): in-process (Caffeine), fast, limited size
+- L2 (distributed): Redis, slower, large capacity
+
+Implementation:
+```java
+@Service
+public class OrderService {
+  @Autowired Caffeine<String, Order> l1Cache;
+  @Autowired RedisTemplate redisTemplate;
+  
+  public Order getOrder(Long id) {
+    String key = "order:" + id;
+    
+    // Check L1
+    Order order = l1Cache.getIfPresent(key);
+    if (order != null) return order;
+    
+    // Check L2
+    order = (Order) redisTemplate.opsForValue().get(key);
+    if (order != null) {
+      l1Cache.put(key, order);
+      return order;
+    }
+    
+    // Fetch from DB
+    order = orderRepository.findById(id);
+    l1Cache.put(key, order);
+    redisTemplate.opsForValue().set(key, order, Duration.ofHours(1));
+    return order;
+  }
+}
+```
+
+Trade-off: write-through (consistency, slower), write-behind (fast, eventual consistency, data loss risk).
+
+Pitfall: cache invalidation complexity (stale data, inconsistency).
+
+---
+
+### Q409: What is ML/AI model integration in Spring applications?
+
+Machine learning model serving: train model, deploy, serve predictions via API.
+
+Example (Spring Cloud Stream + TensorFlow):
+```xml
+<dependency>
+  <groupId>org.tensorflow</groupId>
+  <artifactId>tensorflow-core-api</artifactId>
+  <version>0.4.0</version>
+</dependency>
+```
+
+```java
+@Service
+public class RecommendationService {
+  private SavedModelBundle model; // TensorFlow model
+  
+  @PostConstruct
+  public void loadModel() {
+    model = SavedModelBundle.load("/path/to/recommendation_model", "serve");
+  }
+  
+  public List<Product> getRecommendations(Long userId) {
+    // Fetch user features
+    float[] userFeatures = userFeatureService.getFeatures(userId);
+    
+    // Run inference
+    Operand<?> input = tf.constant(userFeatures);
+    ConcreteFunction<?> function = model.function("serving_default");
+    Output<?> predictions = function.call(input).get(0);
+    
+    // Convert predictions to products
+    float[][] scores = predictions.asRawTensor().data().asFloats().reshape(new long[]{1, -1})[0];
+    return productRepository.findByIdsWithScores(scores);
+  }
+}
+
+@RestController
+@RequestMapping("/recommendations")
+public class RecommendationController {
+  @Autowired RecommendationService recommendationService;
+  
+  @GetMapping("/users/{userId}")
+  public ResponseEntity<List<Product>> getRecommendations(@PathVariable Long userId) {
+    return ResponseEntity.ok(recommendationService.getRecommendations(userId));
+  }
+}
+```
+
+Model versioning:
+```yaml
+ml:
+  models:
+    recommendation:
+      current: v2
+      versions:
+        v1: /models/recommendation_v1
+        v2: /models/recommendation_v2
+```
+
+A/B testing (canary):
+```java
+public List<Product> getRecommendations(Long userId) {
+  if (userId % 100 < 10) { // 10% canary
+    return modelV2.predict(userId);
+  } else {
+    return modelV1.predict(userId);
+  }
+}
+```
+
+Benefit: personalization, predictive capabilities.
+
+Pitfall: model complexity (latency, inference cost); model maintenance (retraining, drift).
+
+---
+
+### Q410: What is internationalization (i18n) and localization (l10n)?
+
+i18n: application supports multiple languages/regions. l10n: translation for specific locale.
+
+Example (Spring message resources):
+```
+messages_en.properties:
+greeting=Hello, {0}!
+order.created=Order created successfully
+
+messages_fr.properties:
+greeting=Bonjour, {0}!
+order.created=Commande créée avec succès
+
+messages_es.properties:
+greeting=Hola, {0}!
+order.created=Orden creada con éxito
+```
+
+Java config:
+```java
+@Configuration
+public class I18nConfig {
+  @Bean
+  public LocaleResolver localeResolver() {
+    SessionLocaleResolver resolver = new SessionLocaleResolver();
+    resolver.setDefaultLocale(Locale.ENGLISH);
+    return resolver;
+  }
+  
+  @Bean
+  public MessageSource messageSource() {
+    ResourceBundleMessageSource source = new ResourceBundleMessageSource();
+    source.setBasename("messages");
+    source.setDefaultEncoding("UTF-8");
+    return source;
+  }
+}
+```
+
+Usage in controllers:
+```java
+@RestController
+public class OrderController {
+  @Autowired MessageSource messageSource;
+  @Autowired LocaleResolver localeResolver;
+  
+  @PostMapping("/orders")
+  public ResponseEntity<?> createOrder(@RequestBody Order order, HttpServletRequest request) {
+    Order created = orderService.create(order);
+    Locale locale = localeResolver.resolveLocale(request);
+    String message = messageSource.getMessage("order.created", null, locale);
+    return ResponseEntity.ok(Map.of("order", created, "message", message));
+  }
+}
+```
+
+Date/number formatting (locale-aware):
+```java
+@RestController
+public class ReportController {
+  @GetMapping("/report")
+  public Map<String, String> generateReport(@RequestHeader("Accept-Language") String lang) {
+    Locale locale = Locale.forLanguageTag(lang);
+    DecimalFormat df = (DecimalFormat) NumberFormat.getInstance(locale);
+    
+    return Map.of(
+      "price", df.format(99.99),
+      "date", SimpleDateFormat.getDateInstance(SimpleDateFormat.LONG, locale).format(new Date())
+    );
+  }
+}
+```
+
+Translation workflow:
+1. Extract message keys from code
+2. Send to translators (crowdsourcing, professional)
+3. Integrate translated properties files
+4. Test for layout issues (some languages longer)
+
+Benefit: global market reach.
+
+Pitfall: incomplete translations (fallback to default), layout issues (CJK languages take more space).
+
+---
+
+### Q411: What are SLO, SLI, SLA in reliability engineering?
+
+SLI (Service Level Indicator): measurable metric (99.9% uptime, p99 latency < 100ms)
+SLO (Service Level Objective): target SLI (we will maintain 99.9% uptime)
+SLA (Service Level Agreement): contractual promise (if not met, refund)
+
+Example:
+```
+SLI: availability = (successful requests / total requests) * 100
+SLO: maintain 99.95% availability (error budget: 0.05% per month)
+SLA: 99.95% availability guaranteed; if not met, customer gets 10% refund
+```
+
+Error budget: how much downtime allowed within SLO
+```
+Monthly error budget = (1 - SLO) * hours_per_month
+Example: (1 - 0.9995) * 730 hours = 0.36 hours (22 minutes downtime allowed)
+```
+
+Implementation:
+```java
+@Component
+public class SLIMonitor {
+  @Autowired MeterRegistry meterRegistry;
+  
+  public void recordRequest(boolean success, long durationMs) {
+    meterRegistry.timer("http.request.duration").record(durationMs, TimeUnit.MILLISECONDS);
+    meterRegistry.counter("http.request", "status", success ? "success" : "failure").increment();
+  }
+  
+  public double calculateAvailability() {
+    Double successCount = meterRegistry.find("http.request")
+      .tag("status", "success")
+      .counters()
+      .stream()
+      .mapToDouble(Counter::count)
+      .sum();
+    
+    Double totalCount = meterRegistry.find("http.request").counters()
+      .stream()
+      .mapToDouble(Counter::count)
+      .sum();
+    
+    return (successCount / totalCount) * 100;
+  }
+}
+```
+
+Monitoring:
+```yaml
+spring:
+  prometheus:
+    metrics:
+      export:
+        enabled: true
+```
+
+Alert when approaching error budget:
+```
+ALERT ErrorBudgetExhausted
+  IF (1 - availability) > error_budget_remaining
+  FOR 5m
+```
+
+Benefit: objective reliability targets, error budgeting guides risk decisions.
+
+Pitfall: SLOs too ambitious (burnout), SLOs too lenient (customer dissatisfaction).
+
+---
+
+### Q412: What is feature flag lifecycle management?
+
+Feature flags have lifecycle: planning → rollout → monitoring → cleanup.
+
+Lifecycle stages:
+```
+Design:
+  - Define toggle name, description
+  - Identify rollout strategy (%, users, regions)
+  - Owner, expiration date
+
+Rollout:
+  - Start at 0% (verify no code issues)
+  - Gradually increase (1%, 5%, 10%, 50%, 100%)
+  - Monitor metrics, error rates
+  - Rollback capability
+
+Monitoring:
+  - Track flag usage
+  - Identify clients still using old feature
+  - Monitor performance impact
+
+Cleanup:
+  - Remove flag from code (6 months after 100% rollout)
+  - Delete from toggle service
+  - Archive configuration
+```
+
+Example (FF4j):
+```yaml
+ff4j:
+  features:
+    new_checkout:
+      enabled: true
+      description: "New checkout flow with wallet support"
+      permissions: []
+      properties:
+        rollout-percent: 10 # 10% of users
+        owner: "payments-team"
+        created-date: "2024-01-01"
+        target-removal: "2024-06-01"
+```
+
+Canary rollout (user-based):
+```java
+@Component
+public class FeatureFlagService {
+  @Autowired FF4j ff4j;
+  
+  public boolean isNewCheckoutEnabled(String userId) {
+    if (!ff4j.check("new_checkout")) return false;
+    
+    // Rolling out to 10% of users (hash-based)
+    int hashValue = userId.hashCode() % 100;
+    int rolloutPercent = Integer.parseInt(
+      ff4j.getFeature("new_checkout").getProperty("rollout-percent").asString());
+    
+    return hashValue < rolloutPercent;
+  }
+}
+
+@RestController
+public class CheckoutController {
+  @Autowired FeatureFlagService featureFlagService;
+  
+  @PostMapping("/checkout")
+  public ResponseEntity<?> checkout(@RequestBody CheckoutRequest request, @RequestHeader("User-Id") String userId) {
+    if (featureFlagService.isNewCheckoutEnabled(userId)) {
+      return ResponseEntity.ok(newCheckoutService.process(request));
+    } else {
+      return ResponseEntity.ok(legacyCheckoutService.process(request));
+    }
+  }
+}
+```
+
+Automated cleanup:
+```java
+@Component
+public class FlagCleanupScheduler {
+  @Scheduled(cron = "0 0 0 * * MON") // weekly
+  public void cleanupExpiredFlags() {
+    ff4j.getFeatures().stream()
+      .filter(f -> LocalDate.now().isAfter(f.getTargetRemovalDate()))
+      .forEach(f -> {
+        log.info("Removing expired flag: {}", f.getName());
+        ff4j.deleteFeature(f.getName());
+      });
+  }
+}
+```
+
+Benefit: safe feature rollout, quick rollback, A/B testing.
+
+Pitfall: flag accumulation (flag debt); enforce cleanup deadline.
+
+---
+
+### Q413: What is Spring Web Services (SOAP)?
+
+Spring Web Services (Spring-WS) provides SOAP/XML web services support (legacy).
+
+WSDL (Web Services Description Language):
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://schemas.xmlsoap.org/wsdl/">
+  <types>
+    <xsd:schema>
+      <xsd:element name="GetOrderRequest">
+        <xsd:complexType>
+          <xsd:sequence>
+            <xsd:element name="orderId" type="xsd:long"/>
+          </xsd:sequence>
+        </xsd:complexType>
+      </xsd:element>
+    </xsd:schema>
+  </types>
+  
+  <message name="GetOrderRequest">
+    <part name="parameters" element="GetOrderRequest"/>
+  </message>
+</definitions>
+```
+
+Spring-WS endpoint:
+```java
+@Endpoint
+public class OrderEndpoint {
+  @Autowired OrderService orderService;
+  
+  @PayloadRoot(namespace = "http://example.com/orders", localPart = "GetOrderRequest")
+  @ResponsePayload
+  public GetOrderResponse getOrder(@RequestPayload GetOrderRequest request) {
+    Order order = orderService.getOrder(request.getOrderId());
+    GetOrderResponse response = new GetOrderResponse();
+    response.setOrder(mapToDto(order));
+    return response;
+  }
+}
+```
+
+Configuration:
+```java
+@Configuration
+@EnableWs
+public class WebServiceConfig implements ServletRegistrationBean {
+  @Bean
+  public ServletRegistrationBean<MessageDispatcherServlet> messageDispatcherServlet() {
+    MessageDispatcherServlet servlet = new MessageDispatcherServlet();
+    servlet.setApplicationContext(applicationContext);
+    return new ServletRegistrationBean<>(servlet, "/ws/*");
+  }
+}
+```
+
+SOAP vs REST:
+- SOAP: formal contract (WSDL), XML verbose, mature tooling, legacy
+- REST: simpler, JSON lightweight, more modern, preferred
+
+Benefit: strongly typed, formal contracts (enterprise systems).
+
+Pitfall: SOAP complexity, XML verbosity; REST preferable for new services.
+
+---
+
+### Q414: What is database sharding strategy?
+
+Sharding: partition data across multiple databases (horizontal scaling).
+
+Shard key strategies:
+
+Range-based:
+```sql
+-- Shard 1: user_id 1-1000000
+-- Shard 2: user_id 1000001-2000000
+-- Shard 3: user_id 2000001-3000000
+
+SELECT * FROM orders WHERE user_id = 12345;
+-- Route to Shard 1 (12345 in range 1-1000000)
+```
+
+Hash-based:
+```java
+public int getShardId(Long userId) {
+  return (int) (userId % numberOfShards); // 0-9 for 10 shards
+}
+
+// user_id=1234 → shard 4 (1234 % 10)
+// user_id=5678 → shard 8 (5678 % 10)
+```
+
+Directory-based (lookup table):
+```
+Shard lookup table:
+user_id | shard_id
+1       | 2
+2       | 5
+3       | 1
+```
+
+Sharding implementation (custom datasource router):
+```java
+@Component
+public class ShardingDataSourceRouter extends AbstractRoutingDataSource {
+  @Override
+  protected Object determineCurrentLookupKey() {
+    Long userId = ShardingContext.getCurrentUserId();
+    int shardId = userId.intValue() % 10;
+    return "shard_" + shardId;
+  }
+}
+
+@Configuration
+public class DataSourceConfig {
+  @Bean
+  public DataSource shardedDataSource() {
+    AbstractRoutingDataSource ds = new ShardingDataSourceRouter();
+    Map<Object, Object> shards = new HashMap<>();
+    for (int i = 0; i < 10; i++) {
+      shards.put("shard_" + i, createDataSource("shard-" + i));
+    }
+    ds.setTargetDataSources(shards);
+    return ds;
+  }
+}
+```
+
+Resharding (add new shards): expensive operation
+```
+Old: 10 shards
+New: 20 shards
+Result: 50% of data must be migrated to new shards
+```
+
+Trade-off: horizontal scaling, but cross-shard queries complex, resharding cost.
+
+Pitfall: shard hotspot (some shards busier), uneven distribution (poor shard key selection).
+
+---
+
+### Q415: What are transaction isolation levels (serializable, repeatable-read, read-committed)?
+
+ACID serializability: transactions execute in isolation (as if sequential).
+
+Isolation levels (lowest → highest):
+
+READ UNCOMMITTED: dirty reads allowed
+```
+T1: writes X=5
+T2: reads X=5 (uncommitted, may rollback)
+```
+
+READ COMMITTED: dirty reads prevented
+```
+T1: writes X=5
+T2: cannot read X until T1 commits
+```
+
+REPEATABLE READ: non-repeatable reads prevented
+```
+T1: reads X=5
+T2: updates X=10
+T1: reads X again → still 5 (repeatable, matches first read)
+```
+
+SERIALIZABLE: phantoms prevented (highest isolation, lowest concurrency)
+```
+T1: selects all orders WHERE status='PENDING'
+T2: inserts new order with status='PENDING'
+T1: select again → might see new row (phantom read)
+```
+
+Spring configuration:
+```java
+@Service
+public class OrderService {
+  @Transactional(isolation = Isolation.SERIALIZABLE)
+  public OrderSummary getOrderSummary(String status) {
+    List<Order> orders = orderRepository.findByStatus(status);
+    return new OrderSummary(orders.size(), orders.stream().mapToDouble(Order::getAmount).sum());
+  }
+}
+```
+
+Default isolation level (PostgreSQL): Read Committed
+
+Trade-off: higher isolation = fewer anomalies but lower concurrency (locks, deadlocks).
+
+Pitfall: SERIALIZABLE can cause deadlocks; use optimistic locking (version column) instead.
+
+---
+
+### Q416: What is optimistic locking?
+
+Optimistic locking: assumes conflicts rare; detect conflicts at commit time using version column.
+
+Example:
+```java
+@Entity
+public class Order {
+  @Id private Long id;
+  @Version private Long version; // optimistic lock version
+  private String status;
+  private double amount;
+}
+
+// Concurrent update scenario
+// T1: reads Order(id=1, version=1, status='PENDING')
+// T2: reads Order(id=1, version=1, status='PENDING')
+// T1: updates to COMPLETED (version → 2)
+// T2: tries to update → StaleObjectStateException (version mismatch)
+
+@Service
+public class OrderService {
+  @Transactional
+  public Order updateStatus(Long id, String newStatus) {
+    Order order = orderRepository.findById(id).get();
+    order.setStatus(newStatus);
+    return orderRepository.save(order); // may throw StaleObjectStateException
+  }
+}
+```
+
+Handle conflict:
+```java
+@RestController
+public class OrderController {
+  @ExceptionHandler(StaleObjectStateException.class)
+  public ResponseEntity<?> handleOptimisticLockFailure(StaleObjectStateException e) {
+    return ResponseEntity.status(409).body(Map.of("error", "Order updated by another user; please retry"));
+  }
+  
+  @PutMapping("/orders/{id}")
+  public ResponseEntity<Order> updateOrder(@PathVariable Long id, @RequestBody Order updates) {
+    try {
+      return ResponseEntity.ok(orderService.updateStatus(id, updates.getStatus()));
+    } catch (StaleObjectStateException e) {
+      return handleOptimisticLockFailure(e);
+    }
+  }
+}
+```
+
+Benefit: no locks (high concurrency), conflict detection.
+
+Pitfall: conflicts trigger manual retry; frequent conflicts indicate design issue.
+
+---
+
+### Q417: What is JSON Web Token (JWT) and how to validate?
+
+JWT: stateless token with encoded claims (no server-side session).
+
+Structure: Header.Payload.Signature
+```
+Header: {"alg": "HS256", "typ": "JWT"}
+Payload: {"sub": "user123", "email": "user@example.com", "exp": 1234567890}
+Signature: HMACSHA256(Header.Payload, secret_key)
+```
+
+Spring Security JWT validation:
+```java
+@Configuration
+@EnableWebSecurity
+public class JwtConfig {
+  @Bean
+  public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+    http
+      .authorizeHttpRequests(auth -> auth
+        .requestMatchers("/login").permitAll()
+        .anyRequest().authenticated())
+      .oauth2ResourceServer(oauth2 -> oauth2.jwt());
+    return http.build();
+  }
+  
+  @Bean
+  public JwtDecoder jwtDecoder() {
+    return NimbusJwtDecoder.withSecretKey(getSecretKey()).build();
+  }
+  
+  private SecretKey getSecretKey() {
+    return Keys.hmacShaKeyFor(Decoders.BASE64.decode(jwtSecret));
+  }
+}
+```
+
+Generate JWT:
+```java
+@RestController
+@RequestMapping("/auth")
+public class AuthController {
+  @Autowired JwtProvider jwtProvider;
+  
+  @PostMapping("/login")
+  public ResponseEntity<?> login(@RequestBody LoginRequest request) {
+    if (userService.validateCredentials(request.getUsername(), request.getPassword())) {
+      String token = jwtProvider.generateToken(request.getUsername());
+      return ResponseEntity.ok(Map.of("token", token));
+    }
+    return ResponseEntity.status(401).body("Invalid credentials");
+  }
+}
+
+@Component
+public class JwtProvider {
+  @Value("${jwt.secret}") private String jwtSecret;
+  @Value("${jwt.expiration}") private long expirationMs;
+  
+  public String generateToken(String username) {
+    Date now = new Date();
+    Date expiryDate = new Date(now.getTime() + expirationMs);
+    
+    return Jwts.builder()
+      .setSubject(username)
+      .setIssuedAt(now)
+      .setExpiration(expiryDate)
+      .signWith(SignatureAlgorithm.HS512, jwtSecret)
+      .compact();
+  }
+  
+  public String getUsernameFromToken(String token) {
+    return Jwts.parser()
+      .setSigningKey(jwtSecret)
+      .parseClaimsJws(token)
+      .getBody()
+      .getSubject();
+  }
+}
+```
+
+Trade-off: stateless (scalable), but token revocation difficult (use blacklist).
+
+Pitfall: secret key compromise (rotate, use strong entropy).
+
+---
+
+### Q418: What is server-sent events (SSE) vs WebSocket?
+
+SSE: server pushes real-time data to client (unidirectional, HTTP-based).
+
+Example (SSE):
+```java
+@RestController
+@RequestMapping("/sse")
+public class OrderSseController {
+  @GetMapping("/orders/{id}")
+  public SseEmitter getOrderUpdates(@PathVariable Long id) {
+    SseEmitter emitter = new SseEmitter();
+    
+    executorService.execute(() -> {
+      try {
+        Order order = orderRepository.findById(id).get();
+        
+        while (order.getStatus().equals("PENDING")) {
+          emitter.send(SseEmitter.event()
+            .name("order-update")
+            .data(order)
+            .dispatchTimeout(1000));
+          
+          Thread.sleep(10000); // poll every 10 seconds
+          order = orderRepository.findById(id).get();
+        }
+        
+        emitter.complete();
+      } catch (IOException e) {
+        emitter.completeWithError(e);
+      }
+    });
+    
+    return emitter;
+  }
+}
+```
+
+WebSocket: bidirectional, persistent connection.
+
+Example (WebSocket):
+```java
+@Configuration
+@EnableWebSocket
+public class WebSocketConfig implements WebSocketConfigurer {
+  @Override
+  public void registerWebSocketHandlers(WebSocketHandlerRegistry registry) {
+    registry.addHandler(orderWebSocketHandler(), "/ws/orders");
+  }
+  
+  @Bean
+  public WebSocketHandler orderWebSocketHandler() {
+    return new OrderWebSocketHandler();
+  }
+}
+
+@Component
+public class OrderWebSocketHandler extends TextWebSocketHandler {
+  private Set<WebSocketSession> sessions = new CopyOnWriteArraySet<>();
+  
+  @Override
+  public void afterConnectionEstablished(WebSocketSession session) {
+    sessions.add(session);
+  }
+  
+  @Override
+  public void handleTextMessage(WebSocketSession session, TextMessage message) {
+    // Client sends order update request
+    Long orderId = Long.parseLong(message.getPayload());
+    Order order = orderRepository.findById(orderId).get();
+    
+    // Broadcast to all connected clients
+    sessions.forEach(s -> {
+      try {
+        s.sendMessage(new TextMessage(objectMapper.writeValueAsString(order)));
+      } catch (IOException e) {
+        // handle error
+      }
+    });
+  }
+}
+```
+
+SSE vs WebSocket:
+- SSE: simpler (HTTP), built-in browser support, unidirectional
+- WebSocket: bidirectional, lower overhead, real-time games/chat
+
+Benefit: real-time updates without polling.
+
+Pitfall: resource-intensive (open connections); limit concurrent connections.
+
+---
+
+### Q419: What is circuit breaker with fallback strategies?
+
+Circuit breaker prevents cascading failures (fail-fast when downstream unavailable).
+
+States: Closed (happy path) → Open (too many failures) → Half-Open (test recovery).
+
+Fallback strategies:
+
+1. Return cached data:
+```java
+@Service
+public class OrderService {
+  @Autowired CacheService cache;
+  @Autowired PaymentClient paymentClient;
+  
+  @CircuitBreaker(name = "paymentService", fallbackMethod = "chargeWithCache")
+  public Payment charge(Order order) {
+    return paymentClient.charge(order);
+  }
+  
+  public Payment chargeWithCache(Order order, Exception e) {
+    Payment cached = cache.get("payment:" + order.getId());
+    if (cached != null) {
+      return cached; // return stale cached data
+    }
+    throw new ServiceUnavailableException("Payment service unavailable");
+  }
+}
+```
+
+2. Queue for later processing:
+```java
+public Payment chargeQueueForRetry(Order order, Exception e) {
+  retryQueue.add(new PaymentRetry(order.getId(), order));
+  return new Payment(status = "PENDING_RETRY"); // return PENDING status
+}
+```
+
+3. Degrade gracefully:
+```java
+public Payment chargeWithDegradation(Order order, Exception e) {
+  // Skip validation, charge immediately
+  Order simplified = new Order(order.getId(), order.getAmount()); // strip fields
+  return new Payment(status = "CHARGED_DEGRADED");
+}
+```
+
+Benefit: resilience, prevents cascading failures.
+
+Pitfall: fallback complexity (choose appropriate strategy per use case).
+
+---
+
+### Q420: What is rate limiting with token bucket algorithm?
+
+Token bucket: tokens refill at fixed rate; each request costs tokens.
+
+Example:
+```
+Bucket capacity: 100 tokens
+Refill rate: 10 tokens/second
+
+Time 0s: 100 tokens
+Request 1 (costs 1): 99 tokens
+Request 2 (costs 1): 98 tokens
+...after 10 requests: 90 tokens
+...after 1 second: 100 tokens (refilled to capacity)
+After 10 seconds: 100 tokens (refilled, capped at capacity)
+```
+
+Implementation (Redis-backed):
+```java
+@Component
+public class TokenBucketLimiter {
+  @Autowired StringRedisTemplate redisTemplate;
+  
+  private final int capacity = 100;
+  private final int refillRate = 10; // tokens/second
+  
+  public boolean allowRequest(String key) {
+    String bucketKey = "bucket:" + key;
+    String refillKey = "refill:" + key;
+    
+    // Get current tokens and last refill time
+    Long tokens = redisTemplate.opsForValue().increment(bucketKey, 0);
+    Long lastRefill = Long.parseLong(redisTemplate.opsForValue().get(refillKey) != null ? 
+      redisTemplate.opsForValue().get(refillKey) : "0");
+    
+    // Calculate tokens to add based on time elapsed
+    long now = System.currentTimeMillis() / 1000;
+    long secondsElapsed = now - lastRefill;
+    long tokensToAdd = secondsElapsed * refillRate;
+    
+    long newTokens = Math.min(capacity, tokens + tokensToAdd);
+    
+    if (newTokens > 0) {
+      redisTemplate.opsForValue().set(bucketKey, String.valueOf(newTokens - 1));
+      redisTemplate.opsForValue().set(refillKey, String.valueOf(now));
+      return true;
+    }
+    return false;
+  }
+}
+```
+
+Use in controller:
+```java
+@RestController
+public class OrderController {
+  @Autowired TokenBucketLimiter limiter;
+  
+  @GetMapping("/orders")
+  public ResponseEntity<?> listOrders(@RequestHeader("X-User-Id") String userId) {
+    if (!limiter.allowRequest(userId)) {
+      return ResponseEntity.status(429).body("Rate limit exceeded");
+    }
+    return ResponseEntity.ok(orderService.list());
+  }
+}
+```
+
+Benefit: smooth rate limiting (bursty traffic allowed up to capacity).
+
+Pitfall: distributed implementation complex (clock skew, race conditions).
+
+---
+
+### Q421: What is database replication (master-slave, multi-master)?
+
+Replication: copy data across multiple servers for redundancy & read scaling.
+
+Master-slave (primary-replica):
+```
+Master:
+- Handles reads & writes
+- Writes to binary log
+- Slaves read binary log
+
+Slave:
+- Reads-only (typically)
+- Applies master's changes
+- Lag possible (asynchronous)
+
+Topology:
+Master → Slave1 → Slave2 (cascade)
+Master
+├── Slave1
+├── Slave2
+└── Slave3
+```
+
+Multi-master (circular):
+```
+Master1 ↔ Master2
+Both handle reads & writes
+Conflict resolution: last-write-wins, custom merge
+```
+
+Spring configuration (read-write splitting):
+```java
+@Configuration
+public class DataSourceConfig {
+  @Bean
+  public DataSource masterDataSource() {
+    return createDataSource("master-host");
+  }
+  
+  @Bean
+  public DataSource slaveDataSource() {
+    return createDataSource("slave-host");
+  }
+  
+  @Bean
+  public DataSource routingDataSource() {
+    AbstractRoutingDataSource ds = new AbstractRoutingDataSource() {
+      @Override
+      protected Object determineCurrentLookupKey() {
+        return TransactionSynchronizationManager.isCurrentTransactionReadOnly() ? "slave" : "master";
+      }
+    };
+    Map<Object, Object> sources = new HashMap<>();
+    sources.put("master", masterDataSource());
+    sources.put("slave", slaveDataSource());
+    ds.setTargetDataSources(sources);
+    return ds;
+  }
+}
+
+@Service
+public class OrderService {
+  @Transactional(readOnly = true) // routes to slave
+  public Order getOrder(Long id) {
+    return orderRepository.findById(id);
+  }
+  
+  @Transactional // routes to master
+  public Order createOrder(Order order) {
+    return orderRepository.save(order);
+  }
+}
+```
+
+Benefit: read scalability, high availability (failover).
+
+Pitfall: replication lag (reads may be stale), complexity (failover is manual or requires tool).
+
+---
+
+### Q422: What is dependency version management (Maven BOM)?
+
+BOM (Bill of Materials): centralized version control for Maven dependencies.
+
+Example (Spring Boot BOM):
+```xml
+<dependencyManagement>
+  <dependencies>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-dependencies</artifactId>
+      <version>3.2.0</version>
+      <type>pom</type>
+      <scope>import</scope>
+    </dependency>
+  </dependencies>
+</dependencyManagement>
+
+<dependencies>
+  <dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-web</artifactId>
+    <!-- version omitted; inherited from BOM -->
+  </dependency>
+</dependencies>
+```
+
+Custom BOM:
+```xml
+<!-- pom.xml (library) -->
+<artifactId>myapp-bom</artifactId>
+<packaging>pom</packaging>
+
+<dependencyManagement>
+  <dependencies>
+    <dependency>
+      <groupId>com.mycompany</groupId>
+      <artifactId>order-service-api</artifactId>
+      <version>1.0.0</version>
+    </dependency>
+    <dependency>
+      <groupId>com.mycompany</groupId>
+      <artifactId>payment-service-api</artifactId>
+      <version>1.1.0</version>
+    </dependency>
+  </dependencies>
+</dependencyManagement>
+
+<!-- pom.xml (consumer) -->
+<dependencyManagement>
+  <dependencies>
+    <dependency>
+      <groupId>com.mycompany</groupId>
+      <artifactId>myapp-bom</artifactId>
+      <version>1.0.0</version>
+      <type>pom</type>
+      <scope>import</scope>
+    </dependency>
+  </dependencies>
+</dependencyManagement>
+
+<dependencies>
+  <dependency>
+    <groupId>com.mycompany</groupId>
+    <artifactId>order-service-api</artifactId>
+    <!-- version inherited from BOM -->
+  </dependency>
+</dependencies>
+```
+
+Benefit: consistent versions across modules, easy upgrades.
+
+Pitfall: overly strict versioning (blocks necessary updates).
+
+---
+
+### Q423: What is property source hierarchy in Spring?
+
+Spring loads properties from multiple sources (command-line > env vars > application.properties).
+
+Hierarchy (highest → lowest priority):
+1. Command-line arguments: `--server.port=9000`
+2. Environment variables: `export SERVER_PORT=9000`
+3. OS environment: `$SERVER_PORT`
+4. application-[profile].properties (active profile)
+5. application.properties
+6. @PropertySource annotations
+7. System properties (System.getProperty())
+
+Example:
+```properties
+# application.properties (default)
+server.port=8080
+logging.level=INFO
+
+# application-prod.properties (production profile)
+server.port=8443
+logging.level=WARN
+database.url=jdbc:mysql://prod-db:3306/orders
+```
+
+Activate profile:
+```bash
+java -jar app.jar --spring.profiles.active=prod
+export SPRING_PROFILES_ACTIVE=prod
+```
+
+Custom property source:
+```java
+@Configuration
+@PropertySource("classpath:custom.properties")
+public class AppConfig {
+  @Value("${custom.value}")
+  private String customValue;
+}
+```
+
+Environment access:
+```java
+@Component
+public class ConfigLoader {
+  @Autowired Environment env;
+  
+  public void loadConfig() {
+    String port = env.getProperty("server.port");
+    String[] profiles = env.getActiveProfiles();
+  }
+}
+```
+
+Benefit: environment-specific config without code changes.
+
+Pitfall: property name conflicts (same property in multiple sources); explicit priority necessary.
+
+---
+
+### Q424: What is health checks and liveness probes in Kubernetes?
+
+Kubernetes uses probes to manage pod lifecycle:
+
+Liveness: is container alive? If not, restart.
+Readiness: is container ready for traffic? If not, remove from load balancer.
+Startup: has startup logic completed? If not, defer liveness/readiness checks.
+
+Spring Boot Actuator health endpoint:
+```yaml
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: always
+```
+
+Endpoint: GET /actuator/health
+```json
+{
+  "status": "UP",
+  "components": {
+    "db": {"status": "UP"},
+    "diskSpace": {"status": "UP"},
+    "redis": {"status": "UP"}
+  }
+}
+```
+
+Custom health check:
+```java
+@Component
+public class DatabaseHealthIndicator extends AbstractHealthIndicator {
+  @Autowired DataSource dataSource;
+  
+  @Override
+  protected void doHealthCheck(Health.Builder builder) {
+    try (Connection conn = dataSource.getConnection()) {
+      conn.prepareStatement("SELECT 1").executeQuery();
+      builder.up().withDetail("database", "connected");
+    } catch (SQLException e) {
+      builder.down().withDetail("error", e.getMessage());
+    }
+  }
+}
+```
+
+Kubernetes configuration:
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: order-service
+spec:
+  containers:
+  - name: app
+    image: order-service:latest
+    livenessProbe:
+      httpGet:
+        path: /actuator/health/liveness
+        port: 8080
+      initialDelaySeconds: 30
+      periodSeconds: 10
+    readinessProbe:
+      httpGet:
+        path: /actuator/health/readiness
+        port: 8080
+      initialDelaySeconds: 10
+      periodSeconds: 5
+    startupProbe:
+      httpGet:
+        path: /actuator/health/startup
+        port: 8080
+      failureThreshold: 30
+      periodSeconds: 1
+```
+
+Benefit: automated pod recovery, traffic management.
+
+Pitfall: incorrect health checks (false positives, cascading failures).
+
+---
+
+### Q425: What is graceful shutdown in Spring applications?
+
+Graceful shutdown: complete in-flight requests, close resources, exit cleanly.
+
+Configuration:
+```yaml
+server:
+  shutdown: graceful
+spring:
+  lifecycle:
+    timeout-per-shutdown-phase: 30s # max 30 seconds to shutdown
+```
+
+Custom shutdown hook:
+```java
+@Component
+public class GracefulShutdownManager {
+  @Autowired ApplicationContext applicationContext;
+  @Autowired ExecutorService executorService;
+  
+  @PreDestroy
+  public void shutdown() {
+    log.info("Starting graceful shutdown");
+    
+    // Stop accepting new requests
+    ServletWebServerApplicationContext context = (ServletWebServerApplicationContext) applicationContext;
+    context.getWebServer().stop();
+    
+    // Wait for in-flight requests (max 30s)
+    executorService.shutdown();
+    try {
+      boolean terminated = executorService.awaitTermination(30, TimeUnit.SECONDS);
+      if (!terminated) {
+        log.warn("Executor did not terminate within timeout; forcing shutdown");
+        executorService.shutdownNow();
+      }
+    } catch (InterruptedException e) {
+      executorService.shutdownNow();
+      Thread.currentThread().interrupt();
+    }
+    
+    // Close database, cache, message broker connections
+    closeConnections();
+    
+    log.info("Graceful shutdown complete");
+  }
+  
+  private void closeConnections() {
+    // close all managed resources
+  }
+}
+```
+
+Kubernetes integration:
+```yaml
+apiVersion: v1
+kind: Pod
+spec:
+  terminationGracePeriodSeconds: 30 # allow 30s for graceful shutdown
+  containers:
+  - name: app
+    lifecycle:
+      preStop:
+        exec:
+          command: ["/bin/sh", "-c", "sleep 5"] # delay termination, allow load balancer to remove pod
+```
+
+Benefit: zero data loss, request completion, resource cleanup.
+
+Pitfall: timeout too long delays deployment; too short causes request termination.
+
+---
+
+### Q426: What are advanced Kubernetes patterns (DaemonSet, StatefulSet, Job)?
+
+DaemonSet: ensure pod runs on every node (monitoring, logging agents).
+```yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: monitoring-agent
+spec:
+  selector:
+    matchLabels:
+      app: monitoring
+  template:
+    metadata:
+      labels:
+        app: monitoring
+    spec:
+      containers:
+      - name: agent
+        image: monitoring-agent:latest
+```
+
+StatefulSet: ordered, stable identity (databases, stateful services).
+```yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mysql
+spec:
+  serviceName: mysql # headless service
+  replicas: 3
+  selector:
+    matchLabels:
+      app: mysql
+  template:
+    metadata:
+      labels:
+        app: mysql
+    spec:
+      containers:
+      - name: mysql
+        image: mysql:8.0
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/mysql
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 100Gi
+```
+
+Job: one-time tasks (batch processing).
+```yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: bulk-import
+spec:
+  completions: 10 # run 10 pods to completion
+  parallelism: 5 # 5 pods in parallel
+  backoffLimit: 3 # retry max 3 times
+  template:
+    spec:
+      containers:
+      - name: importer
+        image: order-importer:latest
+      restartPolicy: Never
+```
+
+CronJob: periodic jobs (scheduled tasks).
+```yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: daily-cleanup
+spec:
+  schedule: "0 2 * * *" # 2 AM daily
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: cleanup
+            image: cleanup-job:latest
+          restartPolicy: Never
+```
+
+Benefit: specialized workload support, self-healing.
+
+Pitfall: DaemonSet resource contention; StatefulSet complexity; Job/CronJob error handling.
+
+---
+
+### Q427: What is Helm and its use in Kubernetes deployment?
+
+Helm: package manager for Kubernetes (templates, versioning, release management).
+
+Helm chart structure:
+```
+my-app-chart/
+├── Chart.yaml
+├── values.yaml
+├── values-prod.yaml
+├── templates/
+│   ├── deployment.yaml
+│   ├── service.yaml
+│   ├── configmap.yaml
+│   └── secrets.yaml
+```
+
+Chart.yaml:
+```yaml
+apiVersion: v2
+name: my-app
+version: 1.0.0
+appVersion: 1.0.0
+```
+
+values.yaml:
+```yaml
+replicaCount: 3
+image:
+  repository: order-service
+  tag: 1.0.0
+  pullPolicy: IfNotPresent
+service:
+  type: ClusterIP
+  port: 8080
+ingress:
+  enabled: true
+  hosts:
+  - host: orders.example.com
+    paths:
+    - path: /
+      pathType: Prefix
+```
+
+deployment.yaml (template):
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-{{ .Chart.Name }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  template:
+    spec:
+      containers:
+      - name: app
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+```
+
+Deploy:
+```bash
+# Install
+helm install my-release ./my-app-chart
+
+# Upgrade with prod values
+helm upgrade my-release ./my-app-chart -f values-prod.yaml
+
+# List releases
+helm list
+
+# Rollback
+helm rollback my-release 1
+```
+
+Benefit: templating, versioning, release management, rollback capability.
+
+Pitfall: complex templates hard to debug; test thoroughly.
+
+---
+
+### Q428: What is container security (image scanning, secrets)?
+
+Image scanning: check for vulnerabilities (CVEs) before deployment.
+
+Tools: Trivy, Snyk, Anchore.
+
+Example (Trivy scan):
+```bash
+trivy image order-service:1.0.0
+# Output:
+# Library | Vulnerability | Severity | Fixed Version
+# log4j  | CVE-2021-44228 | CRITICAL | 2.17.0
+```
+
+Secrets in containers: never hardcode; use volume mounts.
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: db-credentials
+type: Opaque
+stringData:
+  username: root
+  password: secret123
+
+---
+apiVersion: v1
+kind: Pod
+spec:
+  containers:
+  - name: app
+    image: order-service:latest
+    env:
+    - name: DB_USER
+      valueFrom:
+        secretKeyRef:
+          name: db-credentials
+          key: username
+    - name: DB_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          name: db-credentials
+          key: password
+```
+
+Non-root containers:
+```dockerfile
+FROM openjdk:11
+RUN useradd -m appuser
+USER appuser
+ENTRYPOINT ["java", "-jar", "app.jar"]
+```
+
+```yaml
+apiVersion: v1
+kind: Pod
+spec:
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    fsGroup: 1000
+  containers:
+  - name: app
+    image: order-service:latest
+    securityContext:
+      readOnlyRootFilesystem: true
+```
+
+Benefit: reduced attack surface, compliance.
+
+Pitfall: image scanning false positives; container security is ongoing (not one-time).
+
+---
+
+### Q429: What is distributed tracing (Jaeger, Zipkin)?
+
+Distributed tracing: track requests across microservices (trace ID → spans).
+
+Span: unit of work (RPC call, database query).
+
+Example (Spring Cloud Sleuth + Jaeger):
+```xml
+<dependency>
+  <groupId>org.springframework.cloud</groupId>
+  <artifactId>spring-cloud-starter-sleuth</artifactId>
+</dependency>
+<dependency>
+  <groupId>org.springframework.cloud</groupId>
+  <artifactId>spring-cloud-sleuth-zipkin</artifactId>
+</dependency>
+```
+
+Properties:
+```yaml
+spring:
+  sleuth:
+    sampler:
+      rate: 0.1 # sample 10% of requests
+  zipkin:
+    base-url: http://zipkin:9411
+```
+
+Enable tracing in code:
+```java
+@RestController
+public class OrderController {
+  @Autowired OrderService orderService;
+  
+  @GetMapping("/orders/{id}")
+  public ResponseEntity<Order> getOrder(@PathVariable Long id) {
+    Order order = orderService.getOrder(id); // creates span
+    return ResponseEntity.ok(order);
+  }
+}
+
+@Service
+public class OrderService {
+  @Autowired PaymentClient paymentClient;
+  
+  public Order getOrder(Long id) {
+    Order order = orderRepository.findById(id); // child span
+    Payment payment = paymentClient.getPayment(order.getId()); // child span
+    return order;
+  }
+}
+```
+
+Jaeger UI: http://localhost:16686
+- Visualize traces (request flow across services)
+- Identify bottlenecks (slow spans)
+- Error tracing (find where failure occurred)
+
+Benefit: end-to-end request visibility, performance analysis.
+
+Pitfall: tracing overhead (sampling helps); sensitive data in spans.
+
+---
+
+### Q430: What is API gateway rate limiting patterns?
+
+API Gateway implements rate limiting for entire application.
+
+Example (Spring Cloud Gateway):
+```yaml
+spring:
+  cloud:
+    gateway:
+      routes:
+      - id: order-service
+        uri: http://order-service:8080
+        predicates:
+        - Path=/api/orders/**
+        filters:
+        - name: RequestRateLimiter
+          args:
+            redis-rate-limiter:
+              replenishRate: 10
+              burstCapacity: 20
+              key-resolver: "#{T(org.springframework.cloud.gateway.support.ipaddress.IpAddressKeyResolver).getInstance()}"
+```
+
+Custom key resolver (by user ID):
+```java
+@Configuration
+public class RateLimitConfig {
+  @Bean
+  public KeyResolver userIdKeyResolver() {
+    return exchange -> Mono.just(extract(exchange.getRequest(), "X-User-Id"));
+  }
+  
+  private String extract(ServerHttpRequest request, String headerName) {
+    return request.getHeaders().getFirst(headerName) != null ? 
+      request.getHeaders().getFirst(headerName) : "ANONYMOUS";
+  }
+}
+```
+
+Tiered rate limiting:
+```yaml
+filters:
+- name: RequestRateLimiter
+  args:
+    redis-rate-limiter:
+      free-tier:
+        replenishRate: 10
+        burstCapacity: 20
+      premium-tier:
+        replenishRate: 100
+        burstCapacity: 200
+```
+
+Benefit: protects backend services, fairness enforcement, DDoS mitigation.
+
+Pitfall: rate limit too strict rejects legitimate traffic; too lenient fails to protect.
+
+---
+
+### Q431: What is container orchestration operator pattern?
+
+Operator: custom controller managing Kubernetes-native resources (CRD).
+
+Example (database operator):
+```yaml
+apiVersion: databases.example.com/v1
+kind: MySQLCluster
+metadata:
+  name: production-db
+spec:
+  version: 8.0
+  replicas: 3
+  storage: 100Gi
+  backup:
+    enabled: true
+    schedule: "0 2 * * *"
+```
+
+Operator watches for MySQLCluster resources and auto-manages:
+- Master-slave setup
+- Replication
+- Backups
+- Failover
+
+Implementation (custom controller):
+```java
+@RestController
+@RequestMapping("/api/v1/clustersscaler")
+public class MySQLOperatorController {
+  @Autowired KubernetesClient kubeClient;
+  
+  @Scheduled(fixedRate = 10000) // watch every 10s
+  public void reconcileClusters() {
+    kubeClient.customResources(MySQLCluster.class).list().forEach(cluster -> {
+      String clusterName = cluster.getMetadata().getName();
+      int desiredReplicas = cluster.getSpec().getReplicas();
+      
+      // Patch StatefulSet to match desired replicas
+      kubeClient.apps().statefulSets().inNamespace(cluster.getMetadata().getNamespace())
+        .withName(clusterName).edit(ss -> {
+          ss.getSpec().setReplicas(desiredReplicas);
+          return ss;
+        });
+    });
+  }
+}
+```
+
+Benefits: Kubernetes-native, auto-healing, operator code reusable.
+
+Pitfall: operator complexity; use existing operators (Prometheus, Kafka) when possible.
+
+---
+
+### Q432: What is cost optimization for cloud infrastructure?
+
+Cost optimization strategies:
+
+Reserved instances: pre-pay for capacity, 40-70% discount vs on-demand
+```
+3-year reserved: 70% discount
+1-year reserved: 40% discount
+On-demand: full price
+```
+
+Spot instances: unused capacity at discount (up to 90% off), suitable for batch jobs
+```
+Hourly price varies based on supply
+Risk: instance can be terminated if demand increases
+Use: batch processing, non-critical workloads
+```
+
+Right-sizing: use smallest instance meeting requirements
+```
+Monitor CPU/memory utilization
+Downscale if average < 30%
+```
+
+Auto-scaling: scale down during off-peak
+```yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: order-service-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: order-service
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 50
+        periodSeconds: 15
+```
+
+Storage optimization: use cheaper tiers for cold data
+```
+Hot storage: SSD (fast, expensive)
+Warm storage: HDD (slow, cheaper)
+Cold storage: Archive (very slow, very cheap)
+```
+
+Data transfer optimization: avoid inter-region transfers (expensive)
+
+Benefit: reduced cloud costs, proportional to utilization.
+
+Pitfall: over-aggressive cost optimization causes performance issues; balance cost & performance.
+
