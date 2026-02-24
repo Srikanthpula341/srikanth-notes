@@ -7147,3 +7147,6763 @@ Benefit: reduced cloud costs, proportional to utilization.
 
 Pitfall: over-aggressive cost optimization causes performance issues; balance cost & performance.
 
+---
+
+### Q433: What is API documentation best practices (OpenAPI/Swagger)?
+
+OpenAPI/Swagger provides machine-readable API specification.
+
+Example (Spring Boot with Springdoc):
+```xml
+<dependency>
+  <groupId>org.springdoc</groupId>
+  <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+  <version>2.0.0</version>
+</dependency>
+```
+
+Configuration:
+```yaml
+springdoc:
+  api-docs:
+    path: /api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    enabled: true
+```
+
+Annotated controller:
+```java
+@RestController
+@RequestMapping("/api/v1/orders")
+@Tag(name = "Orders", description = "Order management API")
+public class OrderController {
+  @GetMapping("/{id}")
+  @Operation(summary = "Get order by ID", description = "Retrieves an order and its details")
+  @ApiResponse(responseCode = "200", description = "Order found", content = {
+    @Content(mediaType = "application/json", schema = @Schema(implementation = Order.class))
+  })
+  @ApiResponse(responseCode = "404", description = "Order not found")
+  public ResponseEntity<Order> getOrder(
+    @Parameter(description = "Order ID", required = true)
+    @PathVariable Long id) {
+    return ResponseEntity.ok(orderService.getOrder(id));
+  }
+  
+  @PostMapping
+  @Operation(summary = "Create order")
+  public ResponseEntity<Order> createOrder(@RequestBody @Valid CreateOrderRequest request) {
+    return ResponseEntity.status(201).body(orderService.create(request));
+  }
+}
+
+@Schema(description = "Order creation request")
+record CreateOrderRequest(
+  @Schema(description = "User ID", example = "123")
+  Long userId,
+  
+  @Schema(description = "Order amount", example = "99.99")
+  @Positive(message = "Amount must be positive")
+  double amount
+) {}
+```
+
+Generated OpenAPI spec: http://localhost:8080/api-docs
+
+Benefits: auto-generated docs, interactive Swagger UI, client SDK generation.
+
+Pitfall: docs get stale (keep annotations in sync with code); use linting tools.
+
+---
+
+### Q434: What is contract testing (Pact, Spring Cloud Contract)?
+
+Contract testing: verify service interactions match agreed contracts.
+
+Pact (consumer-driven):
+```java
+// Consumer test (Order Service expects Payment Service behavior)
+@ExtendWith(PactConsumerTestExt.class)
+@PactTestFor(providerName = "PaymentService", port = "9000")
+public class PaymentServiceConsumerTest {
+  
+  @Pact(consumer = "OrderService", provider = "PaymentService")
+  public RequestResponsePact createPaymentContract(PactBuilder pactBuilder) {
+    return pactBuilder
+      .uponReceiving("a request to charge payment")
+      .path("/payments/charge")
+      .method("POST")
+      .body(Map.of("orderId", 123, "amount", 99.99))
+      .willRespondWith()
+      .status(200)
+      .body(Map.of("transactionId", "txn-456", "status", "SUCCESS"))
+      .toPact();
+  }
+  
+  @Test
+  @PactTestFor(pactMethod = "createPaymentContract")
+  public void verifyChargePaymentContract() {
+    Payment payment = paymentClient.charge(new Order(123L, 99.99));
+    assertThat(payment.getTransactionId()).isEqualTo("txn-456");
+    assertThat(payment.getStatus()).isEqualTo("SUCCESS");
+  }
+}
+```
+
+Spring Cloud Contract (provider-driven):
+```groovy
+// src/test/resources/contracts/payment/should-charge-payment.groovy
+Contract.make {
+  request {
+    method 'POST'
+    url '/payments/charge'
+    body(
+      orderId: 123,
+      amount: 99.99
+    )
+  }
+  response {
+    status 200
+    body(
+      transactionId: 'txn-456',
+      status: 'SUCCESS'
+    )
+  }
+}
+```
+
+Verify contract in provider:
+```java
+@SpringBootTest
+@AutoConfigureWireMock(port = 9000)
+public class PaymentServiceContractTest extends PaymentServiceBase {
+  @Autowired PaymentController paymentController;
+  
+  @Override
+  public void invokePaymentServiceCharge() {
+    // Provider implements contract
+    Payment payment = paymentController.charge(new ChargeRequest(123, 99.99));
+    this.payment = payment;
+  }
+}
+```
+
+Benefits: catches integration issues early, documents API contracts.
+
+Pitfall: contract maintenance (breaking changes must be negotiated); both sides must use contract tests.
+
+---
+
+### Q435: What is test data management and factories?
+
+Test data: consistent, realistic, version-controlled fixtures.
+
+Factory pattern:
+```java
+public class OrderFactory {
+  public static Order createDefaultOrder() {
+    return new Order(1L, 100.0, "PENDING");
+  }
+  
+  public static Order createWithStatus(String status) {
+    return new Order(1L, 100.0, status);
+  }
+  
+  public static Order createWithAmount(double amount) {
+    return new Order(1L, amount, "PENDING");
+  }
+}
+
+// Usage
+Order order = OrderFactory.createWithStatus("COMPLETED");
+```
+
+Builder pattern (fluent):
+```java
+public class OrderBuilder {
+  private Long id = 1L;
+  private double amount = 100.0;
+  private String status = "PENDING";
+  
+  public OrderBuilder withId(Long id) {
+    this.id = id;
+    return this;
+  }
+  
+  public OrderBuilder withStatus(String status) {
+    this.status = status;
+    return this;
+  }
+  
+  public Order build() {
+    return new Order(id, amount, status);
+  }
+}
+
+// Usage
+Order order = new OrderBuilder()
+  .withId(5L)
+  .withStatus("SHIPPED")
+  .build();
+```
+
+Test data seeding (database fixtures):
+```java
+@SpringBootTest
+@Sql(scripts = {"classpath:orders-test-data.sql"})
+public class OrderRepositoryTest {
+  // tests use pre-populated data from SQL script
+}
+```
+
+orders-test-data.sql:
+```sql
+INSERT INTO orders (id, user_id, amount, status) VALUES (1, 100, 50.0, 'PENDING');
+INSERT INTO orders (id, user_id, amount, status) VALUES (2, 100, 75.0, 'COMPLETED');
+```
+
+Benefit: test isolation, reusable test data, readable tests.
+
+Pitfall: test data drift (gets out of sync with schema); automate updates.
+
+---
+
+### Q436: What is continuous deployment (CD) and blue-green deployments?
+
+Continuous Deployment: every commit to main automatically deploys to production (if tests pass).
+
+Blue-green deployment: two identical production environments (blue, green); switch traffic.
+
+```
+Blue (old version, serving traffic):
+- order-service:v1.0.0
+- payment-service:v1.0.0
+
+Green (new version, idle):
+- order-service:v1.1.0
+- payment-service:v1.1.0
+
+Deploy process:
+1. Deploy to Green
+2. Test Green (smoke tests)
+3. Switch load balancer to Green (instant cutover)
+4. Keep Blue as rollback (revert traffic if issues)
+5. After verification, tear down Blue
+```
+
+Implementation (Kubernetes):
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: order-service
+spec:
+  selector:
+    app: order-service
+    version: blue # selector points to blue
+  ports:
+  - port: 80
+    targetPort: 8080
+
+---
+# Blue deployment (current)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: order-service-blue
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: order-service
+      version: blue
+  template:
+    metadata:
+      labels:
+        app: order-service
+        version: blue
+    spec:
+      containers:
+      - name: order-service
+        image: order-service:1.0.0
+
+---
+# Green deployment (new)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: order-service-green
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: order-service
+      version: green
+  template:
+    metadata:
+      labels:
+        app: order-service
+        version: green
+    spec:
+      containers:
+      - name: order-service
+        image: order-service:1.1.0
+```
+
+Switch to green:
+```bash
+kubectl patch service order-service -p '{"spec":{"selector":{"version":"green"}}}'
+```
+
+Rollback to blue:
+```bash
+kubectl patch service order-service -p '{"spec":{"selector":{"version":"blue"}}}'
+```
+
+Benefit: zero-downtime deployment, instant rollback.
+
+Pitfall: requires double resources (blue + green); blue-green more expensive than canary.
+
+---
+
+### Q437: What is canary deployment?
+
+Canary deployment: gradually roll out new version to % of traffic.
+
+```
+1% traffic → v1.1.0 (1 replica)
+99% traffic → v1.0.0 (99 replicas)
+
+Monitor metrics (error rate, latency)
+If good: increase to 10%
+If bad: rollback immediately
+```
+
+Implementation (Istio VirtualService):
+```yaml
+apiVersion: networking.istio.io/v1alpha3
+kind: VirtualService
+metadata:
+  name: order-service
+spec:
+  hosts:
+  - order-service
+  http:
+  - match:
+    - headers:
+        user-type:
+          exact: "canary"
+    route:
+    - destination:
+        host: order-service
+        port:
+          number: 8080
+        subset: v1.1.0
+      weight: 100
+  - route:
+    - destination:
+        host: order-service
+        port:
+          number: 8080
+        subset: v1.0.0
+      weight: 99
+    - destination:
+        host: order-service
+        port:
+          number: 8080
+        subset: v1.1.0
+      weight: 1
+```
+
+Automated canary (Flagger):
+```yaml
+apiVersion: flagger.app/v1beta1
+kind: Canary
+metadata:
+  name: order-service
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: order-service
+  progressDeadlineSeconds: 300
+  service:
+    port: 8080
+  analysis:
+    interval: 1m
+    threshold: 5 # max 5% error rate
+    maxWeight: 50 # max 50% traffic
+    stepWeight: 10 # increase by 10% per interval
+    metrics:
+    - name: error-rate
+      thresholdRange:
+        max: 5
+      interval: 1m
+    - name: latency
+      thresholdRange:
+        max: 500m
+      interval: 1m
+```
+
+Benefit: gradual rollout, immediate rollback on issues, metrics-driven.
+
+Pitfall: longer deployment time (phased rollout).
+
+---
+
+### Q438: What are mutation testing and code coverage?
+
+Mutation testing: inject bugs (mutations) to verify tests catch them.
+
+Example (PIT - Pitest):
+```xml
+<plugin>
+  <groupId>org.pitest</groupId>
+  <artifactId>pitest-maven</artifactId>
+  <version>1.10.1</version>
+</plugin>
+```
+
+Run:
+```bash
+mvn org.pitest:pitest-maven:mutationCoverage
+```
+
+Result: report shows mutations killed (test caught) vs survived (test missed).
+
+```
+Mutation: change > to >=
+  Order amount = 100
+  Original: if (amount > 50) → true
+  Mutated: if (amount >= 50) → true
+  Result: KILLED (test caught mutation)
+
+Mutation: remove return statement
+  Original: return orderRepository.findById(id)
+  Mutated: return null
+  Result: SURVIVED (test didn't catch null return)
+  → Need to add test for null case
+```
+
+Code coverage: measure % of code executed by tests.
+
+Example (JaCoCo):
+```xml
+<plugin>
+  <groupId>org.jacoco</groupId>
+  <artifactId>jacoco-maven-plugin</artifactId>
+  <version>0.8.8</version>
+  <executions>
+    <execution>
+      <goals>
+        <goal>prepare-agent</goal>
+      </goals>
+    </execution>
+  </executions>
+</plugin>
+```
+
+Coverage metrics:
+- Line coverage: % of lines executed
+- Branch coverage: % of if/else branches taken
+- Path coverage: % of execution paths covered
+
+Benefit: mutation testing reveals weak tests; code coverage shows untested code.
+
+Pitfall: high coverage doesn't guarantee good tests (need mutation testing); 100% coverage not always necessary.
+
+---
+
+### Q439: What is log aggregation (ELK, Splunk)?
+
+Log aggregation: centralize logs from multiple services for analysis.
+
+ELK Stack (Elasticsearch, Logstash, Kibana):
+
+```
+Application
+  ↓ (logs via syslog/HTTP)
+Logstash (parse, enrich)
+  ↓
+Elasticsearch (index, search)
+  ↓
+Kibana (visualize, alert)
+```
+
+Spring Boot with Logback + ELK:
+```xml
+<dependency>
+  <groupId>net.logstash.logback</groupId>
+  <artifactId>logstash-logback-encoder</artifactId>
+  <version>7.2</version>
+</dependency>
+```
+
+logback-spring.xml:
+```xml
+<appender name="LOGSTASH" class="net.logstash.logback.appender.LogstashTcpSocketAppender">
+  <destination>logstash:5000</destination>
+  <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+    <customFields>{"app": "order-service", "environment": "prod"}</customFields>
+  </encoder>
+</appender>
+
+<root level="INFO">
+  <appender-ref ref="LOGSTASH"/>
+</root>
+```
+
+Kibana dashboard:
+```json
+{
+  "query": {
+    "bool": {
+      "must": [
+        {"match": {"app": "order-service"}},
+        {"match": {"level": "ERROR"}},
+        {"range": {"timestamp": {"gte": "now-1h"}}}
+      ]
+    }
+  }
+}
+```
+
+Benefits: centralized logging, full-text search, alerting, trend analysis.
+
+Pitfall: ELK complexity (storage, cost); managed services (DataDog, New Relic) simpler.
+
+---
+
+### Q440: What is incident response and postmortem process?
+
+Incident response: structured process to handle production issues.
+
+Phases:
+
+Detection: monitoring alerts (error rate, latency spike)
+```
+Alert: error rate > 5% for 5 minutes
+```
+
+Triage: assess severity
+```
+SEV1 (critical): customers affected, revenue impact → page on-call
+SEV2 (high): degraded service → notify team
+SEV3 (low): minor issue → log for later
+```
+
+Response:
+```
+1. Establish war room (Slack, video call)
+2. Incident commander delegates tasks
+3. Parallel: investigate root cause, mitigate impact
+4. Communication updates every 5 minutes
+5. Implement workaround / rollback
+```
+
+Postmortem (blameless, learning-focused):
+```
+Timeline:
+14:30 - error rate spike detected
+14:35 - identified payment service timeouts
+14:40 - triggered rollback to v1.0.0
+14:50 - error rate normalized
+
+Root cause:
+Payment gateway introduced rate limiting (undisclosed)
+→ Service exhausted connection pool
+
+Action items:
+1. Add circuit breaker for payment gateway (prevent resource exhaustion)
+2. Implement health checks for external dependencies
+3. Load test before deploying new versions
+4. Improve alerting (detect latency before error rate spikes)
+5. Document external service SLAs
+```
+
+Benefit: learning from incidents, system improvement, psychological safety.
+
+Pitfall: blame-focused postmortems (suppress reporting); blameless culture essential.
+
+---
+
+### Q441: What is infrastructure as code (Terraform, CloudFormation)?
+
+Infrastructure as Code: define cloud infrastructure in code (version-controlled, repeatable).
+
+Terraform (cloud-agnostic):
+```hcl
+# main.tf
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+}
+
+provider "aws" {
+  region = "us-east-1"
+}
+
+variable "environment" {
+  default = "prod"
+}
+
+# VPC
+resource "aws_vpc" "main" {
+  cidr_block = "10.0.0.0/16"
+  tags = {
+    Name = "${var.environment}-vpc"
+  }
+}
+
+# RDS database
+resource "aws_db_instance" "postgres" {
+  identifier     = "orders-db"
+  engine         = "postgres"
+  instance_class = "db.t3.micro"
+  allocated_storage = 100
+  
+  db_name  = "orders"
+  username = "admin"
+  password = var.db_password # from tfvars
+  
+  multi_az = true # high availability
+  backup_retention_period = 30
+  
+  tags = {
+    Name = "${var.environment}-db"
+  }
+}
+
+# ECS Cluster
+resource "aws_ecs_cluster" "main" {
+  name = "${var.environment}-cluster"
+  
+  setting {
+    name  = "containerInsights"
+    value = "enabled"
+  }
+}
+
+output "database_endpoint" {
+  value = aws_db_instance.postgres.endpoint
+}
+```
+
+Apply:
+```bash
+terraform plan # preview changes
+terraform apply # apply changes
+terraform destroy # tear down
+```
+
+CloudFormation (AWS-native):
+```yaml
+AWSTemplateFormatVersion: 2010-09-09
+Description: Order Service Infrastructure
+
+Parameters:
+  Environment:
+    Type: String
+    Default: prod
+
+Resources:
+  OrderDatabase:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      Engine: postgres
+      DBInstanceClass: db.t3.micro
+      AllocatedStorage: 100
+      DBName: orders
+      MasterUsername: admin
+      MasterUserPassword: !Sub '{{{{resolve:secretsmanager:db-password:SecretString:password}}}}'
+
+  OrderServiceCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub '${Environment}-cluster'
+
+Outputs:
+  DatabaseEndpoint:
+    Value: !GetAtt OrderDatabase.Endpoint.Address
+```
+
+Benefits: infrastructure version control, reproducible deployments, automation.
+
+Pitfall: IaC drift (manual changes outside code); always use IaC for changes.
+
+---
+
+### Q442: What is observability vs monitoring?
+
+Monitoring: collect predefined metrics/logs/traces.
+
+Observability: ability to understand system state from outputs (metrics, logs, traces, events).
+
+Monitoring (reactive):
+```
+Metric: error_rate
+Alert: IF error_rate > 5%, page on-call
+Action: investigate and fix
+```
+
+Observability (proactive):
+```
+Question: "Why is error rate high?"
+Trace: follow request through services, find slow span
+Logs: examine detailed context
+Metrics: correlate with infrastructure changes
+Events: what changed (deployment, config)?
+Answer: payment service slow due to database timeout
+```
+
+Implementation (O11y):
+```java
+@Service
+public class ObservableOrderService {
+  @Autowired MeterRegistry meterRegistry;
+  @Autowired Tracer tracer;
+  
+  public Order createOrder(Order order) {
+    Span span = tracer.spanBuilder("createOrder")
+      .setAttribute("order.id", order.getId())
+      .setAttribute("order.amount", order.getAmount())
+      .startSpan();
+    
+    try (Scope scope = span.makeCurrent()) {
+      // Emit metric
+      meterRegistry.counter("orders.created", "status", "success").increment();
+      
+      // Trace nested calls
+      Span dbSpan = tracer.spanBuilder("orderRepository.save")
+        .setParent(Context.current().with(span))
+        .startSpan();
+      try {
+        orderRepository.save(order);
+      } finally {
+        dbSpan.end();
+      }
+      
+      return order;
+    } catch (Exception e) {
+      span.recordException(e);
+      span.setStatus(StatusCode.ERROR);
+      meterRegistry.counter("orders.created", "status", "error").increment();
+      throw e;
+    } finally {
+      span.end();
+    }
+  }
+}
+```
+
+Benefit: faster debugging, proactive issue detection, system understanding.
+
+Pitfall: observability overhead (sampling helps); data retention cost.
+
+---
+
+### Q443: What is GitOps and declarative deployment?
+
+GitOps: Git as source of truth; declarative infrastructure/config synced to cluster.
+
+Tool: ArgoCD (Kubernetes)
+
+```
+GitHub repo:
+└── manifests/
+    ├── order-service-deployment.yaml
+    ├── service.yaml
+    └── configmap.yaml
+
+ArgoCD polls GitHub every 3 minutes
+If repo changed: automatically sync to cluster
+```
+
+order-service-deployment.yaml:
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: order-service
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: order-service
+  template:
+    metadata:
+      labels:
+        app: order-service
+    spec:
+      containers:
+      - name: order-service
+        image: docker.io/myrepo/order-service:v1.2.0
+```
+
+ArgoCD Application:
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: order-service-app
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/company/infra
+    path: manifests/order-service
+    targetRevision: main
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: production
+  syncPolicy:
+    automated:
+      prune: true # delete resources not in Git
+      selfHeal: true # revert manual changes
+```
+
+Workflow:
+```
+1. Developer commits new version to Git
+2. ArgoCD detects change
+3. Deploys to cluster automatically
+4. If someone manually changes pod, ArgoCD reverts
+```
+
+Benefit: entire infrastructure at Git commit (reviewable, auditable), easy rollback.
+
+Pitfall: secrets in Git (use sealed secrets or external vault).
+
+---
+
+### Q444: What are chaos engineering and resilience testing?
+
+Chaos engineering: intentionally inject failures to find weaknesses.
+
+Tools: Chaos Toolkit, Gremlin, LitmusChaos
+
+Example (kill random pods):
+```yaml
+apiVersion: litmuschaos.io/v1alpha1
+kind: ChaosEngine
+metadata:
+  name: pod-delete-chaos
+spec:
+  engineState: 'active'
+  appinfo:
+    appns: 'default'
+    applabel: 'app=order-service'
+  experiments:
+  - name: pod-delete
+    spec:
+      components:
+        env:
+        - name: TOTAL_CHAOS_DURATION
+          value: '30' # 30 seconds
+        - name: CHAOS_INTERVAL
+          value: '10' # every 10 seconds
+        - name: REPLICAS
+          value: '3'
+```
+
+Verify resilience:
+```java
+@SpringBootTest
+public class ChaosResilienceTest {
+  @Autowired OrderService orderService;
+  @Autowired CircuitBreaker orderCB;
+  
+  @Test
+  public void testOrderServiceWithPodFailure() throws Exception {
+    // Start chaos: kill random pods every 10s for 30s
+    chaosEngine.startChaos("pod-delete");
+    
+    // Application continues functioning (failing gracefully)
+    for (int i = 0; i < 10; i++) {
+      Order order = orderService.createOrder(new Order(...));
+      assertThat(order).isNotNull(); // should succeed or gracefully degrade
+      Thread.sleep(2000);
+    }
+    
+    // After chaos stops, verify full recovery
+    chaosEngine.stopChaos();
+    Order order = orderService.createOrder(new Order(...));
+    assertThat(order.getStatus()).isEqualTo("PENDING");
+  }
+}
+```
+
+Network failure injection:
+```yaml
+apiVersion: litmuschaos.io/v1alpha1
+kind: ChaosEngine
+metadata:
+  name: network-latency-chaos
+spec:
+  experiments:
+  - name: network-latency
+    spec:
+      components:
+        env:
+        - name: NETWORK_LATENCY # add 100ms latency
+          value: '100'
+        - name: TOTAL_CHAOS_DURATION
+          value: '120'
+```
+
+Benefits: discover failure modes before production, build resilience, confidence.
+
+Pitfall: chaos can cause issues in shared environments; use isolated staging.
+
+---
+
+### Q445: What is API versioning and backward compatibility?
+
+API versioning: manage breaking changes without breaking clients.
+
+Strategies:
+
+URL path versioning:
+```
+GET /api/v1/orders/{id} → OrderV1DTO
+GET /api/v2/orders/{id} → OrderV2DTO (new fields)
+```
+
+Header versioning:
+```
+GET /api/orders/{id}
+Accept-Version: 1
+```
+
+Query parameter:
+```
+GET /api/orders/{id}?version=2
+```
+
+Backward compatibility (avoid breaking changes):
+
+Additive change (safe):
+```java
+// v1
+class Order {
+  Long id;
+  String status;
+}
+
+// v2 - add optional field
+class Order {
+  Long id;
+  String status;
+  LocalDateTime createdAt; // optional, default null
+}
+```
+
+Rename field (breaking):
+```java
+// v1
+class Order {
+  String status;
+}
+
+// v2 - rename to orderStatus
+class Order {
+  String orderStatus; // breaks clients expecting 'status'
+}
+
+// Solution: support both (deprecation period)
+class Order {
+  @JsonProperty("status")
+  @Deprecated // clients should use orderStatus
+  String statusOld;
+  
+  @JsonProperty("orderStatus")
+  String status; // new field
+}
+```
+
+Response wrapping (versioning container):
+```java
+// v1
+{
+  "id": 1,
+  "status": "PENDING"
+}
+
+// v2 - add metadata
+{
+  "data": {
+    "id": 1,
+    "status": "PENDING"
+  },
+  "apiVersion": "2.0",
+  "timestamp": "2024-01-15T10:30:00Z"
+}
+
+// Solution: version response envelope
+class ApiResponse<T> {
+  T data;
+  String apiVersion;
+}
+```
+
+Deprecation strategy:
+```java
+@Deprecated(since = "2.0", forRemoval = true)
+@GetMapping("/v1/orders/{id}")
+public Order getOrderV1(@PathVariable Long id) {
+  return getOrderV2(id); // delegate to v2
+}
+
+@GetMapping("/v2/orders/{id}")
+public Order getOrderV2(@PathVariable Long id) {
+  return orderService.getOrder(id);
+}
+```
+
+Benefit: evolve API safely, support multiple client versions.
+
+Pitfall: maintaining multiple versions increases complexity; sunset old versions eventually.
+
+---
+
+### Q446: What is finalization vs resource management in Java?
+
+Finalization (deprecated): cleanup when object garbage-collected.
+
+Pitfall:
+- Unpredictable timing (GC not guaranteed)
+- Performance impact (finalizer threads)
+- Exception suppression (errors in finalizer swallowed)
+
+```java
+class Resource {
+  @Override
+  protected void finalize() throws Throwable {
+    try {
+      // cleanup
+    } finally {
+      super.finalize();
+    }
+  }
+}
+```
+
+Try-with-resources (recommended):
+```java
+try (Connection conn = dataSource.getConnection()) {
+  // use connection
+  PreparedStatement stmt = conn.prepareStatement("SELECT * FROM orders");
+  // ...
+} // automatically closed (even if exception thrown)
+```
+
+Implement AutoCloseable:
+```java
+class ManagedResource implements AutoCloseable {
+  private Connection connection;
+  
+  public ManagedResource(Connection connection) {
+    this.connection = connection;
+  }
+  
+  @Override
+  public void close() throws Exception {
+    connection.close();
+  }
+}
+
+// Usage
+try (ManagedResource resource = new ManagedResource(conn)) {
+  // use resource
+} // automatically closed
+```
+
+Cleaner API (Java 9+):
+```java
+class OffHeapMemory {
+  private static final Cleaner cleaner = Cleaner.create();
+  
+  private final long address;
+  private final int size;
+  private final Cleanable cleanable;
+  
+  public OffHeapMemory(int size) {
+    this.address = allocate(size);
+    this.size = size;
+    this.cleanable = cleaner.register(this, () -> free(address));
+  }
+  
+  // cleanable runs when GC collects this object
+}
+```
+
+Benefit: guaranteed cleanup (try-with-resources), predictable timing.
+
+Pitfall: finalize() still used in legacy code; migrate to try-with-resources.
+
+---
+
+### Q447: What is supplier pattern and lazy initialization?
+
+Supplier: defers computation until needed.
+
+```java
+// Eager (computed immediately)
+Order order = expensiveOrderLookup(); // blocks
+
+// Lazy (computed on demand)
+Supplier<Order> orderSupplier = () -> expensiveOrderLookup();
+Order order = orderSupplier.get(); // computed when called
+```
+
+Example (lazy bean):
+```java
+@Bean
+@Lazy
+public ExpensiveService expensiveService() {
+  return new ExpensiveService(); // not instantiated until first use
+}
+
+@Component
+public class OrderService {
+  @Autowired @Lazy ExpensiveService service; // supplier injected
+  
+  public void process() {
+    service.doWork(); // service instantiated on first call (or explicit get)
+  }
+}
+```
+
+Lazy fields:
+```java
+class OrderCache {
+  private Supplier<List<Order>> orders = Suppliers.memoizeWithExpiration(
+    () -> orderRepository.findAll(),
+    10, TimeUnit.MINUTES
+  );
+  
+  public List<Order> getOrders() {
+    return orders.get(); // cached for 10 minutes
+  }
+}
+```
+
+Optional with supplier:
+```java
+Order order = orderRepository.findById(1L).orElseGet(() -> {
+  log.warn("Order not found, creating default");
+  return new Order(1L, 0.0, "UNKNOWN");
+});
+```
+
+Benefit: defers expensive operations, improves startup time, optional computation.
+
+Pitfall: unclear when supplier computed; document expectations.
+
+---
+
+### Q448: What is bulkhead pattern (thread pool isolation)?
+
+Bulkhead: isolate resources (prevent one failure from cascading).
+
+Example (payment service timeout → exhausts thread pool → affects other services):
+```
+Before bulkhead:
+- Thread pool: 100 threads
+- Payment service slow, holds 90 threads
+- Other services starved (only 10 threads left)
+- Request queue builds up, users timeout
+
+After bulkhead:
+- Thread pool: 100 threads
+- Core pool: 50 threads for common requests
+- Payment service gets isolated 30 threads
+- Notification service gets isolated 20 threads
+- If payment hangs, only those 30 threads affected
+```
+
+Resilience4j bulkhead:
+```java
+@Service
+public class OrderService {
+  @Autowired PaymentClient paymentClient;
+  
+  @Bulkhead(name = "paymentService", type = Bulkhead.Type.THREADPOOL)
+  public Payment chargeWithIsolation(Order order) {
+    return paymentClient.charge(order);
+  }
+}
+```
+
+Configuration:
+```yaml
+resilience4j:
+  bulkhead:
+    instances:
+      paymentService:
+        maxConcurrentCalls: 30
+        maxWaitDuration: 10s
+        threadPoolSize: 30
+      notificationService:
+        maxConcurrentCalls: 20
+        maxWaitDuration: 5s
+        threadPoolSize: 20
+```
+
+Semaphore-based (no thread pool, lighter):
+```yaml
+resilience4j:
+  bulkhead:
+    instances:
+      paymentService:
+        maxConcurrentCalls: 30
+        maxWaitDuration: 10s
+        type: semaphore # lighter than threadpool
+```
+
+Benefit: fault isolation, prevents cascading failures.
+
+Pitfall: thread pool overhead; use semaphore for lightweight calls.
+
+---
+
+### Q449: What is event-driven architecture and event sourcing integration?
+
+Event-driven: services communicate via events (asynchronous, decoupled).
+
+```
+Order Service publishes:
+  → OrderCreatedEvent
+  → OrderPaidEvent
+  → OrderShippedEvent
+
+Subscribers:
+  → Inventory Service (reserves stock)
+  → Notification Service (sends email)
+  → Analytics Service (records metric)
+```
+
+Implementation (Spring ApplicationEventPublisher):
+```java
+@Entity
+public class Order {
+  @Id private Long id;
+  private String status;
+  
+  public static Order create(Long userId, double amount) {
+    Order order = new Order(userId, amount, "PENDING");
+    order.recordEvent(new OrderCreatedEvent(order.getId(), order.getUserId()));
+    return order;
+  }
+  
+  private List<DomainEvent> domainEvents = new ArrayList<>();
+  
+  public void recordEvent(DomainEvent event) {
+    domainEvents.add(event);
+  }
+  
+  public List<DomainEvent> getDomainEvents() {
+    return new ArrayList<>(domainEvents);
+  }
+  
+  public void clearDomainEvents() {
+    domainEvents.clear();
+  }
+}
+
+@Service
+public class OrderService {
+  @Autowired OrderRepository orderRepository;
+  @Autowired ApplicationEventPublisher eventPublisher;
+  
+  @Transactional
+  public Order createOrder(CreateOrderRequest request) {
+    Order order = Order.create(request.getUserId(), request.getAmount());
+    Order saved = orderRepository.save(order);
+    
+    // Publish domain events
+    saved.getDomainEvents().forEach(eventPublisher::publishEvent);
+    saved.clearDomainEvents();
+    
+    return saved;
+  }
+}
+
+@Component
+public class OrderEventListener {
+  @EventListener
+  public void onOrderCreated(OrderCreatedEvent event) {
+    log.info("Order created: {}", event.getOrderId());
+    // Trigger inventory reservation, send notification, etc.
+  }
+}
+```
+
+Event sourcing integration:
+```java
+// Store events in table
+@Entity
+public class OrderEvent {
+  @Id private UUID eventId;
+  private Long orderId;
+  private String eventType; // ORDER_CREATED, ORDER_PAID
+  @Column(columnDefinition = "JSON") private String data;
+  private LocalDateTime timestamp;
+}
+
+// Rebuild state from events
+public Order rebuildOrderFromEvents(Long orderId) {
+  List<OrderEvent> events = eventRepository.findByOrderIdOrderByTimestamp(orderId);
+  Order order = new Order();
+  
+  for (OrderEvent event : events) {
+    switch (event.getEventType()) {
+      case "ORDER_CREATED":
+        OrderCreatedEvent created = objectMapper.readValue(event.getData(), OrderCreatedEvent.class);
+        order.setId(created.getOrderId());
+        order.setStatus("PENDING");
+        break;
+      case "ORDER_PAID":
+        order.setStatus("CONFIRMED");
+        break;
+      case "ORDER_SHIPPED":
+        order.setStatus("SHIPPED");
+        break;
+    }
+  }
+  return order;
+}
+```
+
+Benefit: event history (audit trail), asynchronous processing, decoupling.
+
+Pitfall: eventual consistency (events propagate asynchronously); handle duplicates (idempotency).
+
+---
+
+### Q450: What is system design trade-offs summary?
+
+Key trade-offs in microservices architecture:
+
+Consistency vs Availability (CAP theorem):
+- Strong consistency (ACID): slow (locks), unavailable if network partitioned
+- Eventual consistency (BASE): fast, available, but temporary inconsistency
+
+Monolith vs Microservices:
+- Monolith: simpler deployment, harder scaling, coupled
+- Microservices: complex ops, independent scaling, decoupled
+
+Synchronous vs Asynchronous:
+- Sync (REST): immediate response, coupling, blocking
+- Async (events): decoupled, eventual consistency, complex debugging
+
+Caching vs Freshness:
+- More cache: fast, stale data, cache invalidation complexity
+- Less cache: slow, fresh data, database overload
+
+Database per Service vs Shared:
+- Separate: independent scaling, data consistency complexity, joins hard
+- Shared: easier queries, scaling bottleneck, coupling
+
+Vertical vs Horizontal Scaling:
+- Vertical (bigger machine): simpler, bottleneck, expensive
+- Horizontal (more machines): complex ops, load balancing, distributed systems
+
+Example trade-off decision:
+```
+Requirement: Low latency order lookup ($)
+Option 1: Add cache (Redis)
+  ✓ latency 10ms → 1ms (fast)
+  ✗ cache invalidation complexity
+  ✗ extra infrastructure cost
+
+Option 2: Add database index
+  ✓ latency 100ms → 50ms (acceptable)
+  ✓ simple, no cache invalidation
+  ✗ slower than cache
+
+Option 3: Denormalize data (pre-compute aggregates)
+  ✓ latency 100ms → 5ms
+  ✓ no cache invalidation
+  ✗ storage duplication, batch jobs to denormalize
+
+Decision: Denormalize + selective caching (hot data)
+```
+
+Benefit: conscious design decisions, understand consequences.
+
+Pitfall: no single best architecture; depends on requirements, team, constraints.
+
+---
+
+## Q451–Q500: Query Optimization, Advanced Patterns & Cloud Architecture
+
+### Q451: What is N+1 query problem and solutions?
+
+N+1 problem: fetch parent entity, then iterate and fetch each child separately (N queries instead of 1).
+
+```java
+// ANTI-PATTERN: N+1 queries
+List<Order> orders = orderRepository.findAll(); // 1 query
+for (Order order : orders) {
+  List<OrderItem> items = itemRepository.findByOrderId(order.getId()); // N queries (one per order)
+  order.setItems(items);
+}
+```
+
+Solutions:
+
+Eager loading (JOIN):
+```java
+@Entity
+public class Order {
+  @OneToMany(fetch = FetchType.EAGER) // EAGER load items with order
+  private List<OrderItem> items;
+}
+
+// Query: SELECT o.* FROM orders o LEFT JOIN order_items i ON o.id = i.order_id
+List<Order> orders = orderRepository.findAll(); // 1 query (includes items)
+```
+
+@EntityGraph (selective eager loading):
+```java
+@Repository
+public interface OrderRepository extends JpaRepository<Order, Long> {
+  @EntityGraph(attributePaths = {"items", "customer"})
+  List<Order> findAll();
+}
+```
+
+Batch loading:
+```java
+List<Order> orders = orderRepository.findAll();
+Long[] orderIds = orders.stream().map(Order::getId).toArray(Long[]::new);
+Map<Long, List<OrderItem>> itemsByOrderId = itemRepository.findByOrderIdIn(orderIds)
+  .stream()
+  .collect(Collectors.groupingBy(OrderItem::getOrderId));
+
+orders.forEach(o -> o.setItems(itemsByOrderId.get(o.getId()))); // no DB queries
+```
+
+Custom query:
+```java
+@Query("SELECT o FROM Order o LEFT JOIN FETCH o.items WHERE o.id IN :ids")
+List<Order> findWithItems(@Param("ids") List<Long> orderIds);
+```
+
+Benefit: reduces query count from O(N) to O(1).
+
+Pitfall: EAGER loading can be slow (unnecessary joins); profile and use selectively.
+
+---
+
+### Q452: What is query optimization with EXPLAIN ANALYZE?
+
+EXPLAIN ANALYZE: profiling tool showing query execution plan.
+
+PostgreSQL:
+```sql
+EXPLAIN ANALYZE
+SELECT * FROM orders WHERE user_id = 123;
+
+-- Output:
+-- Seq Scan on orders (cost=0.00..45.00 rows=1 width=100)
+--   Filter: (user_id = 123)
+--   Planning Time: 0.15 ms
+--   Execution Time: 2.35 ms
+--
+-- Interpretation: Sequential scan (slow), filters 1 row, 2.35ms execution
+```
+
+Add index:
+```sql
+CREATE INDEX idx_orders_user_id ON orders(user_id);
+
+EXPLAIN ANALYZE
+SELECT * FROM orders WHERE user_id = 123;
+
+-- Output:
+-- Index Scan using idx_orders_user_id (cost=0.28..8.29 rows=1 width=100)
+--   Index Cond: (user_id = 123)
+--   Execution Time: 0.12 ms
+--
+-- Much faster: index scan (0.12ms vs 2.35ms)
+```
+
+Composite index:
+```sql
+CREATE INDEX idx_orders_user_status ON orders(user_id, status);
+
+EXPLAIN ANALYZE
+SELECT * FROM orders WHERE user_id = 123 AND status = 'PENDING';
+
+-- Index Scan using idx_orders_user_status (cost=0.28..4.15 rows=1 width=100)
+--   Index Cond: (user_id = 123 AND status = 'PENDING')
+--   Execution Time: 0.10 ms
+```
+
+Common issues:
+
+Sequential scan (no index): add index
+```
+Seq Scan on orders (cost=0.00..45000.00 rows=1000000 width=100)
+```
+
+Nested loop join (expensive): add index on join column
+```
+Nested Loop (cost=0.28..1000000.00 rows=100000 width=200)
+  -> Seq Scan on orders
+  -> Index Scan on order_items (via nested loop)
+```
+
+Benefit: data-driven optimization, measurable improvement.
+
+Pitfall: too many indexes (slows writes); monitor query patterns.
+
+---
+
+### Q453: What is partitioning strategies (range, list, hash)?
+
+Partitioning: split large table across partitions for faster queries, scalability.
+
+Range partitioning (by date):
+```sql
+CREATE TABLE orders (
+  id BIGINT PRIMARY KEY,
+  user_id BIGINT,
+  amount DECIMAL,
+  created_at DATE
+) PARTITION BY RANGE (YEAR(created_at)) (
+  PARTITION p2023 VALUES LESS THAN (2024),
+  PARTITION p2024 VALUES LESS THAN (2025),
+  PARTITION p2025 VALUES LESS THAN (2026),
+  PARTITION pmax VALUES LESS THAN MAXVALUE
+);
+
+-- Query on 2024 orders: only searches p2024 partition
+SELECT * FROM orders WHERE created_at >= '2024-01-01' AND created_at < '2025-01-01';
+```
+
+List partitioning (by region):
+```sql
+CREATE TABLE orders (
+  id BIGINT PRIMARY KEY,
+  region VARCHAR(50),
+  amount DECIMAL
+) PARTITION BY LIST (region) (
+  PARTITION pus VALUES IN ('US', 'CA', 'MX'),
+  PARTITION peu VALUES IN ('UK', 'DE', 'FR'),
+  PARTITION pasia VALUES IN ('JP', 'CN', 'IN')
+);
+```
+
+Hash partitioning (distribute by hash):
+```sql
+CREATE TABLE orders (
+  id BIGINT PRIMARY KEY,
+  user_id BIGINT,
+  amount DECIMAL
+) PARTITION BY HASH (user_id) PARTITIONS 10;
+
+-- Rows distributed across 10 partitions based on user_id hash
+```
+
+Benefit: faster queries (scan fewer partitions), easier archival (drop old partitions).
+
+Pitfall: resharding cost, cross-partition queries slow, partition key choice critical.
+
+---
+
+### Q454: What is database connection pooling tuning?
+
+Connection pooling: reuse connections (avoid expensive creation).
+
+HikariCP tuning:
+```yaml
+spring:
+  datasource:
+    hikari:
+      minimumIdle: 5 # idle connections to keep alive
+      maximumPoolSize: 20 # max concurrent connections
+      idleTimeout: 600000 # 10 min before closing idle
+      maxLifetime: 1800000 # 30 min max lifetime
+      connectionTimeout: 30000 # 30 sec to acquire connection
+      leakDetectionThreshold: 60000 # detect leaks > 60s
+      validationQuery: "SELECT 1" # test connection on borrow
+```
+
+Tuning formula:
+```
+connections = ((core_count * 2) + effective_spindle_count)
+Example: 8 cores, 1 disk → connections = (8 * 2) + 1 = 17
+```
+
+Monitor:
+```java
+@Component
+public class ConnectionPoolMonitor {
+  @Autowired HikariDataSource dataSource;
+  
+  @Scheduled(fixedRate = 60000)
+  public void logPoolStats() {
+    HikariPoolMXBean mxBean = dataSource.getHikariPoolMXBean();
+    log.info("Active: {}, Idle: {}, Pending: {}", 
+      mxBean.getActiveConnections(),
+      mxBean.getIdleConnections(), 
+      mxBean.getPendingThreads());
+  }
+}
+```
+
+Detect leaks:
+```yaml
+leakDetectionThreshold: 60000 # log warning if connection not returned > 60s
+```
+
+Common issue: connection exhaustion
+```
+Error: Unable to get a connection, timeout after 30 seconds
+Problem: maxPoolSize too small OR connection leak
+Solution: increase maxPoolSize OR find leaks (ensure close())
+```
+
+Benefit: optimal resource usage, better throughput.
+
+Pitfall: tuning requires testing; different workloads need different settings.
+
+---
+
+### Q455: What is read replicas for scaling reads?
+
+Read replicas: slave databases for read-only queries, master for writes.
+
+```
+Master (writes): 100 QPS write
+Replica1 (reads): 1000 QPS read
+Replica2 (reads): 1000 QPS read
+
+Total read capacity: 2000 QPS (2x replicas)
+Total write capacity: 100 QPS (single master bottleneck)
+```
+
+Spring configuration:
+```java
+@Configuration
+public class RoutingDataSourceConfig {
+  @Bean
+  public DataSource dataSource() {
+    AbstractRoutingDataSource router = new AbstractRoutingDataSource() {
+      @Override
+      protected Object determineCurrentLookupKey() {
+        return TransactionSynchronizationManager.isCurrentTransactionReadOnly() 
+          ? "slave" : "master";
+      }
+    };
+    
+    Map<Object, Object> sources = Map.of(
+      "master", masterDataSource(),
+      "slave", slaveDataSource()
+    );
+    router.setTargetDataSources(sources);
+    return router;
+  }
+  
+  private DataSource masterDataSource() {
+    return DataSourceBuilder.create()
+      .url("jdbc:mysql://master:3306/orders")
+      .username("root")
+      .password("secret")
+      .build();
+  }
+  
+  private DataSource slaveDataSource() {
+    return DataSourceBuilder.create()
+      .url("jdbc:mysql://slave:3306/orders")
+      .username("root")
+      .password("secret")
+      .build();
+  }
+}
+
+@Service
+public class OrderService {
+  @Transactional(readOnly = true) // routes to slave
+  public Order getOrder(Long id) {
+    return orderRepository.findById(id);
+  }
+  
+  @Transactional // routes to master
+  public void updateOrder(Order order) {
+    orderRepository.save(order);
+  }
+}
+```
+
+Replication lag: slave lags master (asynchronous replication)
+```
+T0: Master writes order status = 'SHIPPED'
+T1: Slave reads (still sees old status) → stale read
+T2: Slave replicates write (lag ~100ms)
+T3: Slave reads new status
+```
+
+Handle replication lag:
+```java
+@Service
+public class OrderService {
+  @Transactional(readOnly = true)
+  public Order getOrderWithConsistency(Long id) {
+    // For writes, immediately read from master (ensure consistency)
+    Order order = masterRepository.findById(id);
+    
+    // For eventual consistency reads, use slave
+    return slaveRepository.findById(id);
+  }
+}
+```
+
+Benefit: read scaling, high availability (failover to replica if master down).
+
+Pitfall: replication lag (stale reads), failover complexity, writes still bottlenecked.
+
+---
+
+### Q456: What is full-text search (Elasticsearch)?
+
+Full-text search: find documents matching keywords (not exact match).
+
+Example:
+```
+Document: "Spring Boot Microservices Tutorial"
+Query: "microservice" → matches (stemming: plural becomes singular)
+Query: "spring" → matches
+Query: "tutorial" → matches
+```
+
+Elasticsearch query:
+```java
+@Configuration
+public class ElasticsearchConfig {
+  @Bean
+  public ElasticsearchOperations elasticsearchOperations(RestHighLevelClient client) {
+    return new ElasticsearchRestTemplate(client);
+  }
+}
+
+@Document(indexName = "orders")
+@Data
+public class OrderDocument {
+  @Id private Long id;
+  @Field(type = FieldType.Text, analyzer = "standard")
+  private String description;
+  @Field(type = FieldType.Keyword)
+  private String status;
+}
+
+@Repository
+public interface OrderSearchRepository extends ElasticsearchRepository<OrderDocument, Long> {
+  List<OrderDocument> findByDescription(String keyword);
+}
+
+@Service
+public class OrderSearchService {
+  @Autowired OrderSearchRepository searchRepository;
+  
+  public List<OrderDocument> search(String keyword) {
+    // Full-text search on description
+    return searchRepository.findByDescription(keyword);
+  }
+  
+  public List<OrderDocument> advancedSearch(String keyword, String status) {
+    // Combined search
+    Query query = new NativeSearchQueryBuilder()
+      .withQuery(QueryBuilders.multiMatchQuery(keyword, "description", "status"))
+      .withFilter(QueryBuilders.termQuery("status", status))
+      .build();
+    
+    return searchRepository.search(query).stream()
+      .map(SearchHit::getContent)
+      .collect(Collectors.toList());
+  }
+}
+```
+
+Analyzers:
+- Standard: lowercase, tokenize
+- Keyword: exact match (no tokenization)
+- Custom: custom stopwords, synonyms
+
+Benefit: fast text search (inverted index), relevance scoring, facets.
+
+Pitfall: Elasticsearch complexity (cluster, shards); managed services easier.
+
+---
+
+### Q457: What are advanced Java concurrency features?
+
+StampedLock: stamped locks (optimistic/pessimistic).
+
+```java
+StampedLock lock = new StampedLock();
+private long value;
+
+public long readValue() {
+  long stamp = lock.tryOptimisticRead(); // cheap read, no lock
+  long result = value;
+  if (!lock.validate(stamp)) { // check if modified during read
+    stamp = lock.readLock(); // acquire read lock if invalid
+    try {
+      result = value;
+    } finally {
+      lock.unlockRead(stamp);
+    }
+  }
+  return result;
+}
+
+public void updateValue(long val) {
+  long stamp = lock.writeLock();
+  try {
+    value = val;
+  } finally {
+    lock.unlockWrite(stamp);
+  }
+}
+```
+
+VarHandle: atomic field access.
+
+```java
+private static final VarHandle ACCOUNT_BALANCE;
+
+static {
+  try {
+    ACCOUNT_BALANCE = MethodHandles.lookup().findVarHandle(
+      Account.class, "balance", long.class);
+  } catch (NoSuchFieldException | IllegalAccessException e) {
+    throw new ExceptionInInitializerError(e);
+  }
+}
+
+public void transferFunds(long amount) {
+  // Atomic operation (no lock, hardware-supported)
+  ACCOUNT_BALANCE.compareAndSet(this, balance, balance + amount);
+}
+```
+
+CompletableFuture: async tasks.
+
+```java
+CompletableFuture<Order> orderFuture = CompletableFuture.supplyAsync(() -> {
+  return orderService.getOrder(1L);
+})
+.thenCompose(order -> paymentService.chargeAsync(order))
+.thenCompose(payment -> notificationService.sendAsync(payment))
+.exceptionally(ex -> {
+  log.error("Error", ex);
+  return null;
+});
+
+Order result = orderFuture.join(); // wait for completion
+```
+
+Benefit: fine-grained control, high concurrency, no locks.
+
+Pitfall: complex debugging, deadlock risk (lock ordering).
+
+---
+
+### Q458: What is memory-mapped files (mmap)?
+
+Memory-mapped files: map file to memory, access via pointers (faster than I/O).
+
+```java
+RandomAccessFile file = new RandomAccessFile("large-file.dat", "r");
+FileChannel channel = file.getChannel();
+
+// Map file to memory
+MappedByteBuffer buffer = channel.map(FileChannel.MapMode.READ_ONLY, 0, channel.size());
+
+// Access bytes without I/O
+byte firstByte = buffer.get(0);
+byte[] data = new byte[1024];
+buffer.get(data); // read 1KB directly from memory
+
+channel.close();
+file.close();
+```
+
+Benefits: fast random access, large file handling, zero-copy.
+
+Pitfall: memory pressure (entire file in RAM), platform-dependent.
+
+---
+
+### Q459: What is RSocket (reactive messaging)?
+
+RSocket: binary protocol for reactive messaging (RPC over any transport).
+
+```xml
+<dependency>
+  <groupId>io.rsocket</groupId>
+  <artifactId>rsocket-core</artifactId>
+</dependency>
+<dependency>
+  <groupId>io.rsocket</groupId>
+  <artifactId>rsocket-transport-netty</artifactId>
+</dependency>
+```
+
+Server:
+```java
+@Configuration
+public class RSocketConfig {
+  @Bean
+  public RSocketServer rSocketServer() {
+    return RSocketServer.create(socketAcceptor());
+  }
+  
+  private SocketAcceptor socketAcceptor() {
+    return (setup, sendingSocket) -> Mono.just(
+      new RSocketResponder(orderService)
+    );
+  }
+}
+
+@RSocketController
+public class OrderRSocketController {
+  @Autowired OrderService orderService;
+  
+  @MessageMapping("orders.create") // async request-response
+  public Mono<Order> createOrder(CreateOrderRequest request) {
+    return Mono.fromCallable(() -> orderService.create(request));
+  }
+  
+  @MessageMapping("orders.view") // server push stream
+  public Flux<Order> streamOrders() {
+    return orderService.streamOrders();
+  }
+}
+```
+
+Client:
+```java
+RSocket rSocket = RSocketConnector.connectTcp("localhost", 7000).block();
+
+// Request-response
+Mono<Order> orderMono = rSocket.requestResponse(
+  DefaultPayload.create("{\"userId\":1}"),
+  payload -> new Order(/* from payload */)
+);
+
+// Fire-and-forget
+rSocket.fireAndForget(DefaultPayload.create("create-order")).block();
+
+// Stream
+Flux<Order> orders = rSocket.requestStream(
+  DefaultPayload.create("{}"),
+  payload -> new Order()
+);
+```
+
+Benefits: low latency, bidirectional, multiplexing.
+
+Pitfall: newer protocol (less maturity than REST); fewer tools/libraries.
+
+---
+
+### Q460: What are virtual threads (Project Loom)?
+
+Virtual threads: lightweight threads (millions possible, not like platform threads).
+
+```java
+// Platform thread (OS-based): expensive, limited number
+Thread platformThread = new Thread(() -> {
+  System.out.println("Platform thread");
+});
+platformThread.start();
+
+// Virtual thread (Java 19+)
+Thread virtualThread = Thread.ofVirtual().start(() -> {
+  System.out.println("Virtual thread");
+});
+
+// Create many virtual threads (millions possible)
+for (int i = 0; i < 1_000_000; i++) {
+  Thread.ofVirtual().start(() -> {
+    // handle request
+  });
+}
+```
+
+Benefits: handles millions of concurrent connections, simplifies async code.
+
+Example (servlet with virtual threads):
+```java
+// Traditional: thread pool limited, blocking
+@RestController
+public class OrderController {
+  @GetMapping("/orders/{id}")
+  public Order getOrder(@PathVariable Long id) {
+    // blocks platform thread (few hundred available)
+    return orderService.getOrder(id);
+  }
+}
+
+// Virtual threads: can block freely (millions available)
+server.tomcat.threads.max=10000 // can be much higher
+```
+
+Pitfall: not suitable for CPU-bound tasks (still limited by cores); good for I/O-bound.
+
+---
+
+### Q461: What is foreign data wrapper (FDW) in PostgreSQL?
+
+FDW: query external data sources as PostgreSQL tables.
+
+```sql
+CREATE EXTENSION postgres_fdw;
+
+CREATE SERVER order_warehouse
+  FOREIGN DATA WRAPPER postgres_fdw
+  OPTIONS (host 'warehouse.example.com', dbname 'warehouse', port '5432');
+
+CREATE USER MAPPING FOR current_user
+  SERVER order_warehouse
+  OPTIONS (user 'warehouse_user', password 'secret');
+
+CREATE FOREIGN TABLE warehouse_orders (
+  id BIGINT,
+  amount DECIMAL,
+  created_at TIMESTAMP
+)
+SERVER order_warehouse
+OPTIONS (schema_name 'public', table_name 'orders');
+
+-- Query external database transparently
+SELECT * FROM warehouse_orders WHERE created_at > '2024-01-01';
+
+-- Join local + external tables
+SELECT l.id, l.amount, w.amount
+FROM local_orders l
+JOIN warehouse_orders w ON l.id = w.id;
+```
+
+Benefits: transparent access to external data, federated queries.
+
+Pitfall: network latency (external queries slower); use for occasional access.
+
+---
+
+### Q462: What is distributed consensus (Raft, Paxos)?
+
+Consensus: all nodes agree on shared state (critical for distributed systems).
+
+Raft algorithm:
+- Leader: handles writes, replicates to followers
+- Followers: replicate leader's changes
+- If leader fails, followers elect new leader
+
+Election timeout: if follower doesn't hear leader in timeout, request votes.
+
+Term: logical clock (term increases on election).
+
+Log replication:
+```
+Leader: log entries [entry1, entry2]
+Follower1: replicates entries
+Follower2: replicates entries
+Committed: when majority replicated
+```
+
+Tools: etcd (Raft), Consul (Raft), Zookeeper (Paxos).
+
+Example (etcd for distributed config):
+```bash
+# Write key-value
+etcdctl put /config/database/url "jdbc:mysql://db:3306/orders"
+
+# All nodes see updated value
+etcdctl get /config/database/url
+# Output: jdbc:mysql://db:3306/orders
+```
+
+Benefit: fault-tolerant consensus, split-brain prevention.
+
+Pitfall: consensus has performance cost (replication latency).
+
+---
+
+### Q463: What is blockchain-like patterns (merkle trees, immutable logs)?
+
+Merkle tree: hash-based tree for efficient verification.
+
+```
+Root: hash(h1 + h2)
+  h1: hash(h3 + h4)
+  h2: hash(h5 + h6)
+```
+
+Append-only audit log (blockchain-inspired):
+```java
+@Entity
+public class AuditLogEntry {
+  @Id private UUID id;
+  private String action;
+  @Column(name = "prev_hash") private String previousHash;
+  @Column(name = "curr_hash") private String currentHash;
+  private LocalDateTime timestamp;
+  
+  public static String computeHash(String previousHash, String action) {
+    String combined = previousHash + action + System.currentTimeMillis();
+    return DigestUtils.sha256Hex(combined);
+  }
+}
+
+@Service
+public class ImmutableAuditService {
+  @Autowired AuditLogRepository repository;
+  
+  @Transactional
+  public void recordAction(String action) {
+    AuditLogEntry lastEntry = repository.findLatest();
+    String prevHash = lastEntry != null ? lastEntry.getCurrentHash() : "0";
+    String currentHash = AuditLogEntry.computeHash(prevHash, action);
+    
+    repository.save(new AuditLogEntry(action, prevHash, currentHash));
+  }
+  
+  public boolean isValid() {
+    List<AuditLogEntry> entries = repository.findAllOrdered();
+    String prevHash = "0";
+    
+    for (AuditLogEntry entry : entries) {
+      String computed = AuditLogEntry.computeHash(prevHash, entry.getAction());
+      if (!computed.equals(entry.getCurrentHash())) {
+        return false; // tampering detected
+      }
+      prevHash = entry.getCurrentHash();
+    }
+    return true;
+  }
+}
+```
+
+Benefit: tamper detection, immutability verification.
+
+Pitfall: performance cost (hashing), not needed unless audit is critical.
+
+---
+
+### Q464: What is database replication consistency models?
+
+Replication consistency: how quickly replicas catch up.
+
+Strong consistency (synchronous replication):
+- Write to master, replicate to all slaves synchronously
+- Commit only after all replicas ack
+- Slow (wait for slowest replica)
+- No stale reads
+
+Eventual consistency (asynchronous replication):
+- Write to master, replicate to slaves asynchronously
+- Commit immediately (don't wait for replicas)
+- Fast
+- Stale reads possible
+
+Causal consistency (hybrid):
+- Write depends on previous write → replicate in order
+- Causally related reads see writes in order
+- Faster than strong, maintains causality
+
+Implementation (Spring):
+```java
+@Service
+public class OrderService {
+  @Transactional // strong consistency (wait for replicas)
+  public Order createOrderStrong(Order order) {
+    return masterRepository.save(order);
+  }
+  
+  @Transactional(propagation = Propagation.REQUIRES_NEW)
+  public Order createOrderEventual(Order order) {
+    // Write to master, don't wait for replication
+    return masterRepository.saveAsync(order); // async operation
+  }
+  
+  @Transactional(readOnly = true) // may read stale data
+  public Order getOrderEventual(Long id) {
+    return slaveRepository.findById(id);
+  }
+  
+  @Transactional(readOnly = true) // fresh data
+  public Order getOrderStrong(Long id) {
+    return masterRepository.findById(id);
+  }
+}
+```
+
+Benefit: understand consistency guarantees, choose appropriate model.
+
+Pitfall: strong consistency slow; eventual consistency is default (handle stale reads).
+
+---
+
+### Q465: What is data warehouse (OLTP vs OLAP)?
+
+OLTP (Online Transaction Processing): operational database, optimized for writes.
+- Many small transactions
+- Normalized schema
+- Row-oriented storage
+- Example: MySQL, PostgreSQL
+
+OLAP (Online Analytical Processing): data warehouse, optimized for reads.
+- Few large queries
+- Denormalized schema (star/snowflake)
+- Column-oriented storage (Parquet, ORC)
+- Example: Snowflake, BigQuery, Redshift
+
+Example (order data warehouse):
+
+OLTP (transactional):
+```sql
+-- Normalized
+CREATE TABLE orders (id, user_id, amount, created_at);
+CREATE TABLE order_items (id, order_id, product_id, quantity);
+CREATE TABLE products (id, product_id, price);
+
+-- Frequent writes: 1000 inserts/sec
+INSERT INTO orders VALUES (...);
+INSERT INTO order_items VALUES (...);
+```
+
+OLAP (analytics warehouse, ETL daily):
+```sql
+-- Denormalized (star schema)
+CREATE TABLE fact_orders (
+  order_id, user_id, product_id, quantity, amount,
+  order_date, product_category, user_region
+);
+
+-- Typical query: product sales by region
+SELECT user_region, SUM(amount)
+FROM fact_orders
+WHERE order_date >= '2024-01-01'
+GROUP BY user_region;
+```
+
+ETL (Extract, Transform, Load):
+```java
+@Component
+@Scheduled(cron = "0 0 2 * * ?") // daily at 2 AM
+public class OrdersDwarehouse {
+  @Autowired OrderRepository orderRepository;
+  @Autowired WarehouseRepository warehouseRepository;
+  
+  public void loadOrdersToWarehouse() {
+    List<Order> orders = orderRepository.findCreatedSince(LocalDate.now().minusDays(1));
+    List<FactOrder> facts = orders.stream()
+      .map(o -> new FactOrder(
+        o.getId(), o.getUserId(), o.getProductId(),
+        o.getQuantity(), o.getAmount(), o.getCreatedAt(),
+        o.getProduct().getCategory(), o.getUser().getRegion()
+      ))
+      .collect(Collectors.toList());
+    
+    warehouseRepository.saveAll(facts);
+  }
+}
+```
+
+Benefit: fast analytics queries (hundreds of GB data), business intelligence.
+
+Pitfall: ETL complexity, eventual consistency (daily data not real-time).
+
+---
+
+### Q466: What is sharding key design?
+
+Sharding key: partition key determining shard assignment.
+
+Good key (even distribution):
+- user_id: user-based partitioning (most operations by user)
+- customer_id: customer-based partitioning
+
+Bad key (hotspot):
+- status: few values (PENDING, COMPLETED) → uneven distribution
+- date: temporal data (recent data concentrated in shards)
+- region: geographic (some regions busier)
+
+Hash selection:
+```java
+Long userId = 12345;
+int shardId = (int) (Math.abs(userId.hashCode()) % NUM_SHARDS);
+// shardId = 0-9 (for 10 shards)
+```
+
+Resharding (adding shards):
+```
+Old: 10 shards
+New: 20 shards
+
+For each key:
+  Old shard = key % 10
+  New shard = key % 20
+  
+Problem: old_shard != new_shard for most keys
+Solution: migrate data (expensive, downtime risk)
+```
+
+Approach 1: consistent hashing (mitigates resharding):
+```
+Add new shard: only ~1/11 of keys rehashed (vs ~50% with modulo)
+```
+
+Approach 2: directory-based (explicit mapping):
+```sql
+CREATE TABLE shard_map (
+  key BIGINT PRIMARY KEY,
+  shard_id INT
+);
+
+SELECT shard_id FROM shard_map WHERE key = 12345;
+```
+
+Benefit: horizontal scaling, handle large datasets.
+
+Pitfall: distributed joins difficult, cross-shard queries slow, resharding cost.
+
+---
+
+### Q467: What is zero-copy optimization (direct memory access)?
+
+Zero-copy: avoid copying data between kernel and user space.
+
+Traditional copy:
+```
+Network → Kernel buffer (1 copy)
+       ↓
+User program (2 copy: kernel → user stack)
+       ↓
+Application buffer (3 copy)
+       ↓
+Output (4 copy: user → kernel output)
+= 4 copies total
+```
+
+Zero-copy (sendfile):
+```
+Network → Kernel buffer
+       ↓
+Output (direct: kernel → kernel, no user space)
+= 0 copies to user space
+```
+
+Example (Java NIO):
+```java
+// Traditional I/O (copies)
+FileInputStream fis = new FileInputStream("large-file.dat");
+FileOutputStream fos = new FileOutputStream("output.dat");
+byte[] buffer = new byte[8192];
+int bytesRead;
+while ((bytesRead = fis.read(buffer)) > 0) {
+  fos.write(buffer, 0, bytesRead);
+}
+
+// Zero-copy NIO
+FileChannel source = new FileInputStream("large-file.dat").getChannel();
+FileChannel target = new FileOutputStream("output.dat").getChannel();
+source.transferTo(0, source.size(), target); // zero-copy system call
+```
+
+Netty (zero-copy networking framework):
+```java
+public class ZeroCopyServerHandler extends ChannelInboundHandlerAdapter {
+  @Override
+  public void channelRead(ChannelHandlerContext ctx, Object msg) {
+    ByteBuf buf = (ByteBuf) msg;
+    // Direct buffer (memory-mapped, zero-copy)
+    byte[] data = new byte[buf.readableBytes()];
+    buf.getBytes(0, data); // efficient, minimal copying
+    
+    ctx.writeAndFlush(Unpooled.wrappedBuffer(data));
+  }
+}
+```
+
+Benefit: reduced latency, lower CPU usage, throughput increase.
+
+Pitfall: complex, platform-specific, not all I/O supports zero-copy.
+
+---
+
+### Q468: What is rate limiting per endpoint?
+
+Different endpoints have different rate limits (API tier-based).
+
+```java
+@Configuration
+public class RateLimitingConfig {
+  @Bean
+  public Map<String, RateLimit> endpointRateLimits() {
+    return Map.of(
+      "/api/orders", new RateLimit(100, Duration.ofMinutes(1)), // 100/min
+      "/api/products", new RateLimit(1000, Duration.ofMinutes(1)), // 1000/min
+      "/api/search", new RateLimit(10, Duration.ofMinutes(1)) // 10/min (expensive operation)
+    );
+  }
+}
+
+@Component
+public class RateLimitFilter implements Filter {
+  @Autowired Map<String, RateLimit> limits;
+  @Autowired RateLimiterService limiter;
+  
+  @Override
+  public void doFilter(ServletRequest request, ServletResponse response, FilterChain chain) {
+    HttpServletRequest httpRequest = (HttpServletRequest) request;
+    String path = httpRequest.getRequestURI();
+    String userId = httpRequest.getHeader("X-User-Id");
+    
+    RateLimit limit = limits.get(path);
+    if (limit != null && !limiter.allowRequest(userId + ":" + path, limit)) {
+      ((HttpServletResponse) response).setStatus(429);
+      return;
+    }
+    chain.doFilter(request, response);
+  }
+}
+```
+
+Tiered rate limiting (by user tier):
+```java
+@Entity
+public class User {
+  Long id;
+  String tier; // FREE, PREMIUM, ENTERPRISE
+}
+
+public int getLimit(User user, String endpoint) {
+  return switch (user.getTier()) {
+    case "FREE" -> 10; // 10 requests/min
+    case "PREMIUM" -> 100;
+    case "ENTERPRISE" -> 10000;
+    default -> 1;
+  };
+}
+```
+
+Benefit: protect expensive endpoints, monetization (freemium model).
+
+Pitfall: rate limits frustrate users; communicate clearly, provide upgrade path.
+
+---
+
+### Q469: What is eventual consistency conflict resolution?
+
+Eventual consistency: replicas diverge, later converge (need conflict resolution).
+
+Scenarios:
+
+Last-write-wins (simple but lossy):
+```
+Replica A: order.status = PAID (time: 10:00)
+Replica B: order.status = CANCELLED (time: 10:05)
+Conflict: PAID and CANCELLED differ
+Resolution: use timestamp → CANCELLED (10:05 > 10:00)
+Risk: loses PAID status
+```
+
+Custom conflict resolver (merge):
+```java
+public class OrderConflictResolver {
+  public Order resolve(Order a, Order b) {
+    Order merged = new Order();
+    merged.setId(a.getId());
+    merged.setAmount(Math.max(a.getAmount(), b.getAmount())); // higher amount
+    merged.setStatus(selectStatus(a.getStatus(), b.getStatus())); // status logic
+    merged.setUpdatedAt(Instant.now());
+    return merged;
+  }
+  
+  private String selectStatus(String status1, String status2) {
+    // Status precedence: SHIPPED > PAID > PENDING > CANCELLED
+    int rank1 = statusRank(status1);
+    int rank2 = statusRank(status2);
+    return rank1 > rank2 ? status1 : status2;
+  }
+  
+  private int statusRank(String status) {
+    return switch (status) {
+      case "SHIPPED" -> 4;
+      case "PAID" -> 3;
+      case "PENDING" -> 2;
+      case "CANCELLED" -> 1;
+      default -> 0;
+    };
+  }
+}
+```
+
+Operational transformation (collaborative editing):
+```
+User A types: "Spring"
+User B types: "Boot"
+At same time
+
+Resolved order:
+A's op: insert "Spring" at position 0
+B's op: insert "Boot" at position 0
+Transformed A: insert "Spring" at position 0
+Transformed B: insert "Boot" at position 6 (after "Spring")
+Result: "SpringBoot"
+```
+
+Benefit: handle distributed updates, enable offline-first apps.
+
+Pitfall: conflict resolution complex, application-specific.
+
+---
+
+### Q470: What is database Write-Ahead Logging (WAL)?
+
+WAL: write changes to log before applying to database (durability).
+
+```
+1. Write to WAL (disk)
+2. Ack to client (change is durable)
+3. Apply to database (in-memory)
+4. Periodically flush to disk (checkpoint)
+
+If crash before checkpoint:
+  Restart → replay WAL → recover state
+```
+
+PostgreSQL WAL:
+```sql
+-- Generate WAL entries
+BEGIN;
+INSERT INTO orders VALUES (...); -- WAL entry 1
+UPDATE orders SET status='PAID'; -- WAL entry 2
+COMMIT; -- WAL entry 3
+
+-- If crash occurs, WAL replayed on restart
+```
+
+Checkpoint:
+```
+Checkpoint interval: 16MB WAL or 5 min (whichever first)
+Before checkpoint: keep all WAL entries
+After checkpoint: can discard old WAL (already applied)
+```
+
+Performance tuning:
+```yaml
+# PostgreSQL
+wal_buffers: 16MB # in-memory WAL buffer
+wal_writer_delay: 200ms # how often to flush WAL
+max_wal_size: 4GB # max WAL size before checkpoint forced
+```
+
+Benefit: durability (ACID), crash recovery.
+
+Pitfall: WAL I/O overhead (synchronous writes slow); balance with performance.
+
+---
+
+### Q471: What is request coalescing?
+
+Request coalescing: merge duplicate simultaneous requests to avoid duplicate work.
+
+Problem:
+```
+User A: GET /api/orders/1
+User B: GET /api/orders/1
+Result: 2 database queries (same data)
+```
+
+Solution (coalesce):
+```
+User A: GET /api/orders/1 → DB query starts
+User B: GET /api/orders/1 → wait for A's result
+Result: 1 database query (both get same result)
+```
+
+Implementation:
+```java
+@Component
+public class RequestCoalescer {
+  private Map<String, CompletableFuture<?>> pendingRequests = new ConcurrentHashMap<>();
+  
+  public <T> T coalesce(String key, Function<String, T> loader) {
+    return (T) pendingRequests
+      .computeIfAbsent(key, k -> CompletableFuture.supplyAsync(() -> loader.apply(k)))
+      .join();
+  }
+}
+
+@RestController
+public class OrderController {
+  @Autowired RequestCoalescer coalescer;
+  @Autowired OrderService orderService;
+  
+  @GetMapping("/orders/{id}")
+  public Order getOrder(@PathVariable Long id) {
+    return coalescer.coalesce("order:" + id, 
+      k -> orderService.getOrder(id));
+  }
+}
+```
+
+With caching:
+```java
+@Cacheable(value = "orders", key = "#id")
+public Order getOrder(Long id) {
+  return repository.findById(id);
+}
+```
+
+Benefit: reduce duplicate database queries, improve throughput.
+
+Pitfall: coalescing adds complexity; use strategically for expensive operations.
+
+---
+
+### Q472: What is lazy loading anti-pattern mitigation?
+
+Lazy loading: fetch child entities on-demand (risk of N+1).
+
+Anti-pattern:
+```java
+List<Order> orders = orderRepository.findAll(); // 1 query
+for (Order order : orders) {
+  order.getItems().size(); // N queries (N+1 problem)
+}
+```
+
+Solutions:
+
+Eager loading:
+```java
+@OneToMany(fetch = FetchType.EAGER)
+private List<OrderItem> items;
+```
+
+@EntityGraph:
+```java
+@EntityGraph(attributePaths = "items")
+List<Order> findAll();
+```
+
+Explicit fetch:
+```java
+@Query("SELECT o FROM Order o LEFT JOIN FETCH o.items")
+List<Order> findAllWithItems();
+```
+
+Detached loading (after transaction):
+```java
+public List<Order> getOrdersWithItems() {
+  List<Order> orders = orderRepository.findAll();
+  for (Order order : orders) {
+    Hibernate.initialize(order.getItems()); // force load before detach
+  }
+  return orders;
+}
+```
+
+Benefit: prevent N+1 problem, predictable queries.
+
+Pitfall: eager loading can fetch unnecessary data; profile and optimize.
+
+---
+
+### Q473: What is staleness and TTL (time-to-live)?
+
+Staleness: how old cached data can be.
+
+TTL strategy:
+```java
+@Cacheable(value = "orders", key = "#id", unless = "#result == null")
+public Order getOrder(Long id) {
+  return repository.findById(id);
+}
+
+cafeConfig:
+  maximum-cache-age: 1h // stale after 1 hour
+  refresh-after-write: 30m // refresh at 30 min
+```
+
+Soft expiry (refresh in background):
+```java
+@Service
+public class CacheService {
+  private Cache<String, OrderCache> cache = Caffeine.newBuilder()
+    .refreshAfterWrite(30, TimeUnit.MINUTES) // soft expiry
+    .expireAfterWrite(1, TimeUnit.HOURS) // hard expiry
+    .build(key -> loadFromDb(key));
+  
+  public Order getOrder(Long id) {
+    OrderCache cached = cache.get("order:" + id);
+    if (cached.isStale()) {
+      cache.invalidate("order:" + id); // hard refresh
+    }
+    return cached.getOrder();
+  }
+}
+```
+
+Benefit: cache efficiency, knowconsistency guarantees.
+
+Pitfall: stale data can propagate (accept risk vs freshness).
+
+---
+
+### Q474: What is write combining?
+
+Write combining: buffer writes, flush in batches (reduce I/O operations).
+
+```java
+@Service
+public class BatchOrderProcessor {
+  private List<Order> orderBuffer = new ArrayList<>();
+  private final int BATCH_SIZE = 100;
+  
+  @Autowired OrderRepository repository;
+  
+  public void addOrder(Order order) {
+    orderBuffer.add(order);
+    if (orderBuffer.size() >= BATCH_SIZE) {
+      flush();
+    }
+  }
+  
+  private void flush() {
+    if (!orderBuffer.isEmpty()) {
+      repository.saveAll(orderBuffer); // 1 batch insert vs 100 individual inserts
+      orderBuffer.clear();
+    }
+  }
+  
+  @Scheduled(fixedRate = 1000) // flush every second if not full
+  public void periodicFlush() {
+    flush();
+  }
+}
+```
+
+Message queue batching:
+```java
+@KafkaListener(topics = "orders", groupId = "processor", batch-listener = true)
+public void processBatch(List<Order> orders) {
+  // Process 100 messages in 1 batch (vs 100 individual calls)
+  orderRepository.saveAll(orders);
+}
+```
+
+Benefit: reduce I/O operations, better throughput.
+
+Pitfall: added latency (wait for batch to fill); use periodic flushing.
+
+---
+
+### Q475: What is type safety in REST APIs?
+
+Type-safe REST using generated clients (OpenAPI/gRPC).
+
+OpenAPI codegen:
+```yaml
+# openapi.yaml
+openapi: 3.0.0
+paths:
+  /orders/{id}:
+    get:
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+components:
+  schemas:
+    Order:
+      type: object
+      properties:
+        id:
+          type: integer
+        status:
+          type: string
+          enum: [PENDING, COMPLETED, CANCELLED]
+```
+
+Generate client:
+```bash
+openapi-generator-cli generate -i openapi.yaml -g java -o ./client
+```
+
+Type-safe usage:
+```java
+// Generated code
+OrderApi api = new OrderApi();
+Order order = api.getOrder(1L); // type-safe, IDE autocomplete
+String status = order.getStatus(); // know it's String, not Object
+```
+
+gRPC (strongly typed):
+```protobuf
+service OrderService {
+  rpc GetOrder(GetOrderRequest) returns (Order);
+}
+
+message Order {
+  int64 id = 1;
+  string status = 2;
+}
+```
+
+Generated Java:
+```java
+OrderServiceStub stub = OrderServiceGrpc.newStub(channel);
+stub.getOrder(GetOrderRequest.newBuilder().setId(1).build(), 
+  new StreamObserver<Order>() {
+    public void onNext(Order order) {
+      System.out.println(order.getStatus()); // type-safe
+    }
+  });
+```
+
+Benefit: catch errors at compile time, IDE support, documentation.
+
+Pitfall: schema evolution complexity; coordinate changes between client/server.
+
+---
+
+### Q476: What is slow query handling and optimization?
+
+Slow query log: identify queries exceeding threshold.
+
+MySQL:
+```sql
+SET long_query_time = 0.5; -- log queries > 500ms
+SET log_queries_not_using_indexes = ON;
+
+SHOW SLOWLOG; -- view slow queries
+```
+
+Analysis:
+```sql
+SELECT query, count, avg_time, max_time
+FROM mysql.slow_log
+ORDER BY avg_time DESC
+LIMIT 10;
+```
+
+Optimization steps:
+
+1. Add index:
+```sql
+-- Slow query: SELECT * FROM orders WHERE user_id = 123;
+CREATE INDEX idx_orders_user_id ON orders(user_id);
+```
+
+2. Rewrite query:
+```sql
+-- Slow (full table scan)
+SELECT * FROM orders WHERE YEAR(created_at) = 2024;
+
+-- Fast (uses index)
+SELECT * FROM orders WHERE created_at >= '2024-01-01' AND created_at < '2025-01-01';
+```
+
+3. Denormalize:
+```sql
+-- Slow: JOIN 3 tables
+SELECT o.id, p.name, SUM(oi.quantity)
+FROM orders o
+JOIN order_items oi ON o.id = oi.order_id
+JOIN products p ON oi.product_id = p.id
+GROUP BY o.id;
+
+-- Fast: denormalized table (pre-aggregated)
+SELECT * FROM order_summary WHERE created_at >= '2024-01-01';
+```
+
+Benefit: improve query performance, reduce database load.
+
+Pitfall: optimization is iterative; profile before optimizing.
+
+---
+
+### Q477: What is index selectivity and covering indexes?
+
+Index selectivity: % of rows matched by query.
+
+High selectivity (good for index):
+```sql
+CREATE INDEX idx_orders_status ON orders(status);
+-- Query: SELECT * FROM orders WHERE status = 'COMPLETED';
+-- Selectivity: 0.1% (1000 out of 1M rows)
+```
+
+Low selectivity (bad for index):
+```sql
+CREATE INDEX idx_orders_active ON orders(is_active);
+-- Query: SELECT * FROM orders WHERE is_active = true;
+-- Selectivity: 90% (900K out of 1M rows)
+-- Index scan slower than full table scan
+```
+
+Covering index: includes all columns for query (avoids table lookup).
+
+```sql
+-- Query: SELECT user_id, amount FROM orders WHERE created_at > '2024-01-01'
+
+-- Standard index (slow: lookup table after index scan)
+CREATE INDEX idx_orders_date ON orders(created_at);
+
+-- Covering index (fast: all columns in index)
+CREATE INDEX idx_orders_date_covering ON orders(created_at) INCLUDE (user_id, amount);
+```
+
+Execution:
+```
+Standard index:
+1. Scan index (match created_at)
+2. Lookup table for (user_id, amount) → N table lookups
+
+Covering index:
+1. Scan index (all columns available)
+2. No table lookup needed
+```
+
+Benefit: faster queries, reduced table lookups.
+
+Pitfall: covering indexes larger; trade disk space for speed.
+
+---
+
+### Q478: What is pagination patterns (offset vs cursor)?
+
+Offset pagination (traditional):
+```java
+@GetMapping("/orders")
+public ResponseEntity<Page<Order>> listOrders(
+  @RequestParam(defaultValue = "0") int page,
+  @RequestParam(defaultValue = "20") int size) {
+  
+  return ResponseEntity.ok(orderRepository.findAll(PageRequest.of(page, size)));
+}
+```
+
+Issue: slow for large offsets (LIMIT 1000000, 20 scans 1M rows).
+
+Cursor pagination (efficient):
+```java
+@GetMapping("/orders")
+public ResponseEntity<List<Order>> listOrders(
+  @RequestParam(required = false) String cursor,
+  @RequestParam(defaultValue = "20") int size) {
+  
+  // Cursor: last order ID from previous page
+  // WHERE id > cursor LIMIT 21 (size + 1 to detect "has more")
+  Specification<Order> spec = (root, query, cb) -> {
+    if (cursor != null) {
+      return cb.greaterThan(root.get("id"), Long.parseLong(cursor));
+    }
+    return cb.conjunction();
+  };
+  
+  List<Order> orders = orderRepository.findAll(spec, PageRequest.of(0, size + 1));
+  
+  String nextCursor = orders.size() > size ? 
+    String.valueOf(orders.get(size).getId()) : null;
+  
+  return ResponseEntity.ok(new CursorPaginatedResponse(
+    orders.subList(0, Math.min(size, orders.size())),
+    nextCursor
+  ));
+}
+```
+
+Request: GET /orders?cursor=10&size=20
+Response:
+```json
+{
+  "items": [...20 items...],
+  "nextCursor": "30"
+}
+```
+
+Benefit: efficient pagination (constant time), prevents "concurrent modification" issues.
+
+Pitfall: cursor opaque to clients (can't navigate to specific page); good for infinite scroll.
+
+---
+
+### Q479: What is query result caching invalidation?
+
+Cache invalidation strategies:
+
+Time-based:
+```java
+@Cacheable(value = "orders", key = "#userId", cacheManager = "cacheManager")
+public List<Order> getOrders(Long userId) {
+  return orderRepository.findByUserId(userId);
+}
+
+cacheConfig:
+  caffeine.spec: expireAfterWrite=1h
+```
+
+Event-based (invalidate on change):
+```java
+@Service
+public class OrderService {
+  @Autowired ApplicationEventPublisher eventPublisher;
+  @Autowired CacheManager cacheManager;
+  
+  @Transactional
+  public Order createOrder(Order order) {
+    Order saved = orderRepository.save(order);
+    eventPublisher.publishEvent(new OrderCreatedEvent(saved.getUserId()));
+    return saved;
+  }
+  
+  @EventListener
+  public void onOrderCreated(OrderCreatedEvent event) {
+    // Invalidate user's order cache
+    cacheManager.getCache("orders").evict("orders:" + event.getUserId());
+  }
+}
+```
+
+Tag-based invalidation:
+```java
+@Cacheable(value = "orders", key = "#userId", cacheManager = "tagAwareCacheManager")
+public List<Order> getOrders(Long userId) {
+  return orderRepository.findByUserId(userId);
+}
+
+// Tag: user:123
+cacheManager.getCache("orders").evictIfPresent(new String[]{"user:123"});
+```
+
+Benefit: keep cache fresh without stale data.
+
+Pitfall: invalidation timing (too early: recomputation, too late: stale data).
+
+---
+
+### Q480: What is distributed tracing improvements?
+
+Tracing enhancements:
+
+Correlation IDs (link related spans):
+```java
+@Component
+public class CorrelationIdInterceptor implements ClientHttpRequestInterceptor {
+  @Override
+  public ClientHttpResponse intercept(HttpRequest request, byte[] body, ClientHttpRequestExecution execution) {
+    String correlationId = MDC.get("X-Correlation-ID");
+    request.getHeaders().add("X-Correlation-ID", correlationId);
+    return execution.execute(request, body);
+  }
+}
+```
+
+Baggage (pass metadata):
+```java
+Baggage baggage = Baggage.builder()
+  .put("user-id", userId)
+  .put("request-type", "order-lookup")
+  .build();
+
+Tracer tracer = TracerProvider.get().get("app");
+try (Scope scope = tracer.withBaggage(baggage)) {
+  // baggage available in all child spans
+}
+```
+
+Sampling strategies:
+
+Probability sampling (10%):
+```yaml
+otel.traces.sampler: parentbased_traceidratio
+otel.traces.sampler.arg: 0.1 # sample 10%
+```
+
+Adaptive sampling (based on metrics):
+```java
+public class AdaptiveSampler implements Sampler {
+  public boolean shouldSample() {
+    // Sample if error rate high (need more tracing for debugging)
+    return errorRate > 5%;
+  }
+}
+```
+
+Benefit: reduced tracing overhead (sampling), better context propagation.
+
+Pitfall: sampling can miss rare failures; test sampling strategy.
+
+---
+
+### Q481: What is bulkhead with timeout patterns?
+
+Combine bulkhead (isolation) + timeout (abort slow operations).
+
+```java
+@Service
+public class OrderService {
+  @Bulkhead(name = "paymentService", type = Bulkhead.Type.THREADPOOL)
+  @Timeout(name = "paymentService")
+  public Payment charge(Order order) {
+    // 1. Limited threads (bulkhead)
+    // 2. Aborts after 5 seconds (timeout)
+    return paymentClient.charge(order);
+  }
+}
+```
+
+Configuration:
+```yaml
+resilience4j:
+  bulkhead:
+    instances:
+      paymentService:
+        maxConcurrentCalls: 30
+        maxWaitDuration: 10s
+        threadPoolSize: 30
+  timeout:
+    instances:
+      paymentService:
+        timeoutDuration: 5s
+        cancelRunningFuture: true
+```
+
+Fallback on failure:
+```java
+@Bulkhead(name = "paymentService", fallbackMethod = "chargeFallback")
+@Timeout(name = "paymentService")
+public Payment charge(Order order) {
+  return paymentClient.charge(order);
+}
+
+public Payment chargeFallback(Order order, Exception e) {
+  // Timeout or bulkhead rejection
+  return new Payment(status = "PENDING_RETRY");
+}
+```
+
+Benefit: prevents resource exhaustion, cascading failures.
+
+Pitfall: timeout too short (false positives), too long (defeats purpose).
+
+---
+
+### Q482: What is request batching in APIs?
+
+Request batching: combine multiple requests into single batch (reduce overhead).
+
+GraphQL batch query:
+```graphql
+query {
+  order1: order(id: 1) { id, status }
+  order2: order(id: 2) { id, status }
+  order3: order(id: 3) { id, status }
+}
+```
+
+Custom batch API:
+```java
+@PostMapping("/batch")
+public ResponseEntity<List<OrderResponse>> batch(@RequestBody BatchRequest request) {
+  // Single request: multiple operations
+  List<OrderResponse> responses = request.getOperations().stream()
+    .map(op -> executeOperation(op))
+    .collect(Collectors.toList());
+  
+  return ResponseEntity.ok(responses);
+}
+
+// Request:
+{
+  "operations": [
+    {"action": "getOrder", "id": 1},
+    {"action": "getOrder", "id": 2},
+    {"action": "updateStatus", "id": 3, "status": "PAID"}
+  ]
+}
+
+// Response:
+[
+  {"id": 1, "status": "PENDING"},
+  {"id": 2, "status": "COMPLETED"},
+  {"id": 3, "status": "PAID"}
+]
+```
+
+Benefits: reduce HTTP overhead, fewer round-trips, better throughput.
+
+Pitfall: single error can fail entire batch; use partial success responses.
+
+---
+
+### Q483: What is schema validation library?
+
+Schema validation: validate JSON against schema.
+
+JSONSchema:
+```json
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "userId": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "amount": {
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "status": {
+      "type": "string",
+      "enum": ["PENDING", "COMPLETED", "CANCELLED"]
+    }
+  },
+  "required": ["userId", "amount"]
+}
+```
+
+ValidationUtil:
+```java
+@Component
+public class SchemaValidator {
+  private JsonSchema schema;
+  
+  @PostConstruct
+  public void init() throws IOException {
+    JsonNode schemaNode = objectMapper.readTree(getClass().getResource("/order-schema.json"));
+    schema = JsonSchemaFactory.byDefault().getJsonSchema(schemaNode);
+  }
+  
+  public void validate(Order order) throws ValidationException {
+    JsonNode node = objectMapper.valueToTree(order);
+    ProcessingReport report = schema.validate(node);
+    if (!report.isSuccess()) {
+      throw new ValidationException(report.toString());
+    }
+  }
+}
+```
+
+Benefit: validate API inputs, catch invalid data early.
+
+Pitfall: schema maintenance (keep in sync with code).
+
+---
+
+### Q484: What is service mesh observability improvements?
+
+Service mesh (Istio) provides observability out-of-box.
+
+```yaml
+apiVersion: networking.istio.io/v1alpha3
+kind: VirtualService
+metadata:
+  name: order-service
+spec:
+  hosts:
+  - order-service
+  http:
+  - match:
+    - headers:
+        user-type:
+          exact: "premium"
+    route:
+    - destination:
+        host: order-service
+        port:
+          number: 8080
+        subset: v2 # route premium users to v2
+      weight: 100
+  - route:
+    - destination:
+        host: order-service
+        subset: v1 # route others to v1
+      weight: 100
+```
+
+Metrics (Prometheus):
+```
+istio_request_total{destination_service="order-service", response_code="200"}
+istio_request_duration_milliseconds_bucket{destination_service="order-service"}
+```
+
+Kiali visualization (service mesh graph):
+- Services: boxes
+- Requests: arrows (thickness = traffic volume)
+- Colors: error rates (red = high error)
+
+Distributed tracing (Jaeger):
+- Shows entire request path (order → payment → notification)
+- Latency breakdown per service
+- Error propagation
+
+Benefit: unified observability, no code changes required.
+
+Pitfall: service mesh overhead (sidecar proxies); not needed for small deployments.
+
+---
+
+### Q485: What is API deprecation and versioning strategy?
+
+Deprecation timeline:
+
+Phase 1: Announce (3 months)
+```
+API endpoint: GET /api/v1/orders/{id} [DEPRECATED]
+Header: Deprecation: true
+Link: </api/v2/orders/{id}>; rel="successor-version"
+```
+
+Phase 2: Support dual versions (6 months)
+```
+v1: /api/v1/orders/{id}
+v2: /api/v2/orders/{id}
+Both work for 6 months
+```
+
+Phase 3: v1 optional (3 months)
+```
+Added: X-API-Warn: "v1 deprecated, use v2"
+```
+
+Phase 4: Sunset (remove)
+```
+v1 returns 410 Gone
+```
+
+Implementation:
+```java
+@RestController
+@RequestMapping("/api/v1/orders")
+public class OrderControllerV1 {
+  @GetMapping("/{id}")
+  @Deprecated(since = "2.0", forRemoval = true)
+  public ResponseEntity<Order> getOrder(@PathVariable Long id) {
+    HttpHeaders headers = new HttpHeaders();
+    headers.add("Deprecation", "true");
+    headers.add("Link", "</api/v2/orders/{}; rel=\"successor-version\"");
+    return ResponseEntity.ok().headers(headers).body(orderService.getOrder(id));
+  }
+}
+
+@RestController
+@RequestMapping("/api/v2/orders")
+public class OrderControllerV2 {
+  @GetMapping("/{id}")
+  public ResponseEntity<Order> getOrder(@PathVariable Long id) {
+    return ResponseEntity.ok(orderService.getOrder(id));
+  }
+}
+```
+
+Benefit: graceful migration path, avoid breaking clients.
+
+Pitfall: maintaining multiple versions is costly; phase out aggressively.
+
+---
+
+### Q486: What is GraphQL for complex data fetching?
+
+GraphQL: query language for APIs (request only needed fields).
+
+Schema:
+```graphql
+type Order {
+  id: ID!
+  status: String!
+  items: [OrderItem!]!
+  customer: Customer!
+}
+
+type OrderItem {
+  productId: ID!
+  quantity: Int!
+  price: Float!
+}
+
+type Query {
+  order(id: ID!): Order
+  orders(userId: ID!): [Order!]!
+}
+
+type Mutation {
+  createOrder(input: CreateOrderInput!): Order!
+  updateStatus(orderId: ID!, status: String!): Order!
+}
+```
+
+Query (client requests only needed fields):
+```graphql
+query {
+  order(id: 1) {
+    id
+    status
+    items {
+      productId
+      quantity
+    }
+    customer {
+      name
+      email
+    }
+  }
+}
+```
+
+Spring GraphQL setup:
+```xml
+<dependency>
+  <groupId>org.springframework.boot</groupId>
+  <artifactId>spring-boot-starter-graphql</artifactId>
+</dependency>
+```
+
+Resolver:
+```java
+@Component
+public class OrderResolver {
+  private final OrderService orderService;
+  private final CustomerService customerService;
+  
+  @QueryMapping
+  public Order order(@Argument Long id) {
+    return orderService.getOrder(id);
+  }
+  
+  @SchemaMapping
+  public Customer customer(Order order) {
+    return customerService.getCustomer(order.getCustomerId());
+  }
+}
+```
+
+Benefits: exact data fetching (no over-fetching), single endpoint, strongly typed.
+
+Pitfall: GraphQL complexity; N+1 problem still exists (need batching/caching).
+
+---
+
+### Q487: What is health check endpoints and liveness/readiness?
+
+Health endpoint (Spring Boot Actuator):
+```yaml
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,readiness,liveness
+  endpoint:
+    health:
+      show-details: always
+```
+
+Liveness: is application alive?
+```java
+@Component
+public class CustomLivenessChecker extends AbstractHealthIndicator {
+  @Override
+  protected void doHealthCheck(Health.Builder builder) {
+    // Check if application logic is working
+    if (isApplicationAlive()) {
+      builder.up();
+    } else {
+      builder.down().withDetail("reason", "Background job frozen");
+    }
+  }
+}
+```
+
+Readiness: can application handle traffic?
+```java
+@Component
+public class CustomReadinessChecker extends AbstractHealthIndicator {
+  @Override
+  protected void doHealthCheck(Health.Builder builder) {
+    // Check if all dependencies ready
+    if (isDatabaseReady() && isCacheReady()) {
+      builder.up();
+    } else {
+      builder.down().withDetail("reason", "Database not ready");
+    }
+  }
+}
+```
+
+Kubernetes usage:
+```yaml
+livenessProbe:
+  httpGet:
+    path: /actuator/health/liveness
+    port: 8080
+  initialDelaySeconds: 30
+
+readinessProbe:
+  httpGet:
+    path: /actuator/health/readiness
+    port: 8080
+  initialDelaySeconds: 5
+```
+
+Protocol: 200 OK = healthy, 503 Service Unavailable = unhealthy
+
+Benefit: automatic pod restart/removal, traffic management.
+
+Pitfall: false positives (restart cascades); accurate health checks essential.
+
+---
+
+### Q488: What is distributed transactions without 2PC?
+
+Two-phase commit (2PC) is slow. Alternatives:
+
+Saga pattern (orchestrated):
+```
+Order Service:
+  → Create order (event)
+  → Payment Service (async)
+  → Inventory Service (async)
+  
+If payment fails:
+  → Compensation: cancel order
+  → Notification: inform customer
+```
+
+Implementation:
+```java
+@Service
+public class OrderSagaOrchestrator {
+  @Autowired OrderService orderService;
+  @Autowired PaymentService paymentService;
+  @Autowired InventoryService inventoryService;
+  
+  @Transactional
+  public void createOrder(CreateOrderRequest request) {
+    // Step 1
+    Order order = orderService.createOrder(request);
+    
+    try {
+      // Step 2
+      Payment payment = paymentService.charge(order.getAmount());
+      
+      // Step 3
+      inventoryService.reserveItems(order.getItems());
+      
+      // Success
+      order.setStatus("CONFIRMED");
+      orderService.save(order);
+    } catch (PaymentException e) {
+      // Compensation: rollback
+      orderService.cancel(order.getId());
+      throw e;
+    } catch (InventoryException e) {
+      // Compensation
+      paymentService.refund(order.getId());
+      orderService.cancel(order.getId());
+      throw e;
+    }
+  }
+}
+```
+
+Event sourcing approach (choreographed):
+```
+1. Create Order → OrderCreatedEvent published
+2. Payment Service subscribed → charges → PaymentCompletedEvent
+3. Inventory Service subscribed → reserves → InventoryReservedEvent
+4. Order Service subscribed → confirms order
+```
+
+Implementation:
+```java
+@Service
+public class OrderEventHandler {
+  @EventListener
+  public void onOrderCreated(OrderCreatedEvent event) {
+    paymentService.chargeAsync(event.getOrderId(), event.getAmount());
+  }
+  
+  @EventListener
+  public void onPaymentCompleted(PaymentCompletedEvent event) {
+    inventoryService.reserveAsync(event.getOrderId());
+  }
+  
+  @EventListener
+  public void onPaymentFailed(PaymentFailedEvent event) {
+    orderService.cancelOrder(event.getOrderId());
+  }
+}
+```
+
+Benefit: avoids 2PC (faster), more scalable.
+
+Pitfall: eventual consistency, complex compensation logic.
+
+---
+
+### Q489: What is observability data retention and cost management?
+
+Observability data grows exponentially (metrics, logs, traces).
+
+Cost breakdown:
+- Logs: 10GB/day (~$100/month)
+- Metrics: 1M time series (~$50/month)
+- Traces: 10K traces/sec (~$200/month)
+
+Strategies:
+
+Sampling (reduce volume):
+```yaml
+# Traces
+sampling-rate: 0.1 # keep 10%
+
+# Logs
+level: WARN # don't log DEBUG (verbose)
+
+# Metrics
+histogram-buckets: [0.01, 0.1, 1, 10] # fewer buckets
+```
+
+Retention tiers:
+```
+Hot (30 days): full resolution, fast queries
+Warm (90 days): 1h aggregation, slower
+Cold (1 year): daily aggregation, cheapest
+```
+
+Implementation:
+```java
+@Component
+public class ObservabilityConfig {
+  @Bean
+  public TracerProvider tracerProvider() {
+    SpanProcessor processor = new BatchSpanProcessor(
+      OtlpGrpcSpanExporter.builder()
+        .setEndpoint("http://jaeger:4317")
+        .setTimeout(5, TimeUnit.SECONDS)
+        .setSampler(new ProbabilitySampler(0.1)) // 10% sampling
+        .build()
+    );
+    return SdkTracerProvider.builder()
+      .addSpanProcessor(processor)
+      .build();
+  }
+}
+```
+
+Benefit: reduce observability costs, maintain visibility.
+
+Pitfall: over-aggressive sampling (miss rare failures), under-sampling (insufficient data).
+
+---
+
+### Q490: What is eventual consistency handling in APIs?
+
+Eventual consistency: changes propagate asynchronously (temporary inconsistency).
+
+Patterns:
+
+Polling (client retries):
+```java
+@RestController
+public class OrderController {
+  @GetMapping("/orders/{id}")
+  public ResponseEntity<Order> getOrder(@PathVariable Long id) {
+    Order order = orderService.getOrder(id);
+    
+    // If order not fully processed, return 202 Accepted (not ready)
+    if (order.getStatus().equals("PROCESSING")) {
+      return ResponseEntity.accepted().body(order);
+    }
+    
+    return ResponseEntity.ok(order);
+  }
+}
+
+// Client polls until ready
+while (true) {
+  ResponseEntity<Order> response = restTemplate.getForEntity("/orders/1", Order.class);
+  if (response.getStatusCode().is2xxSuccessful() && !response.getBody().isProcessing()) {
+    break;
+  }
+  Thread.sleep(1000);
+}
+```
+
+Webhooks (push notification):
+```java
+@Service
+public class OrderService {
+  @Autowired WebhookPublisher webhookPublisher;
+  
+  public void processOrder(Order order) {
+    // Async processing
+    CompletableFuture.runAsync(() -> {
+      try {
+        payment = chargePayment(order);
+        order.setStatus("PAID");
+        save(order);
+        
+        // Notify via webhook
+        webhookPublisher.publish("order.paid", order);
+      } catch (Exception e) {
+        webhookPublisher.publish("order.failed", order);
+      }
+    });
+  }
+}
+
+// Webhook consumer (client webhook endpoint)
+@PostMapping("/webhooks/order")
+public ResponseEntity<Void> onOrderEvent(@RequestBody WebhookPayload payload) {
+  log.info("Order event: {}", payload.getEventType());
+  return ResponseEntity.ok().build();
+}
+```
+
+Causality tracking (version numbers):
+```java
+// POST /orders → { id: 1, version: 1, status: PENDING }
+// Eventually changes to: { id: 1, version: 2, status: PAID }
+
+@GetMapping("/orders/{id}")
+public ResponseEntity<Order> getOrder(@PathVariable Long id, @RequestHeader(value = "Version") String expectedVersion) {
+  Order order = orderService.getOrder(id);
+  
+  if (!order.getVersion().equals(expectedVersion)) {
+    // Version mismatch: order changed
+    return ResponseEntity.status(409).body(order); // Conflict
+  }
+  
+  return ResponseEntity.ok(order);
+}
+```
+
+Benefit: handle asynchronous systems, avoid blocking.
+
+Pitfall: client complexity (polling/webhooks); require clear communication.
+
+---
+
+### Q491: What is API gateway routing strategies?
+
+API gateway: single entry point, routes requests to backend services.
+
+Path-based routing:
+```yaml
+spring:
+  cloud:
+    gateway:
+      routes:
+      - id: order-service
+        uri: http://order-service:8080
+        predicates:
+        - Path=/api/orders/**
+      
+      - id: payment-service
+        uri: http://payment-service:8081
+        predicates:
+        - Path=/api/payments/**
+```
+
+Header-based routing:
+```yaml
+- id: premium-service
+  uri: http://premium-service:8080
+  predicates:
+  - Header=X-User-Tier,PREMIUM
+      
+- id: regular-service
+  uri: http://regular-service:8080
+  predicates:
+  - Header=X-User-Tier,FREE
+```
+
+Weight-based (canary):
+```yaml
+- id: order-service-v1
+  uri: http://order-service-v1:8080
+  predicates:
+  - Path=/api/orders/**
+  metadata:
+    weight: 90 # 90% traffic
+
+- id: order-service-v2
+  uri: http://order-service-v2:8080
+  predicates:
+  - Path=/api/orders/**
+  metadata:
+    weight: 10 # 10% traffic (canary)
+```
+
+Custom routing logic:
+```java
+@Component
+public class CustomRouteLocator {
+  @Bean
+  public RouteLocator routes(RouteLocatorBuilder builder) {
+    return builder.routes()
+      .route(r -> r
+        .path("/api/orders/**")
+        .filters(f -> f.circuitBreaker(c -> c.setName("orderServiceCB")))
+        .uri("http://order-service:8080"))
+      .build();
+  }
+}
+```
+
+Benefit: single entry point, cross-cutting concerns (auth, logging, rate limiting).
+
+Pitfall: gateway becomes bottleneck; ensure scalability (multiple instances).
+
+---
+
+### Q492: What is API contract enforcement?
+
+Contract testing: ensure API changes don't break clients.
+
+Consumer contract:
+```java
+@Test
+public void testOrderServiceContract() {
+  // Consumer expects GET /orders/1 → { id: 1, status: PENDING }
+  OrderDTO order = client.getOrder(1L);
+  assertThat(order.getId()).isEqualTo(1);
+  assertThat(order.getStatus()).isEqualTo("PENDING");
+}
+```
+
+Provider contract:
+```java
+@Test
+public void testOrderEndpoint() {
+  // Provider must match contract
+  MockMvc mockMvc = MockMvcBuilders.standaloneSetup(orderController).build();
+  mockMvc.perform(get("/orders/1"))
+    .andExpect(status().isOk())
+    .andExpect(jsonPath("$.id").value(1))
+    .andExpect(jsonPath("$.status").value("PENDING"));
+}
+```
+
+Compatibility flags (graceful changes):
+```java
+@GetMapping("/orders/{id}")
+public OrderResponse getOrder(@PathVariable Long id, @RequestHeader(value = "Api-Version", required = false) String apiVersion) {
+  Order order = orderService.getOrder(id);
+  
+  if ("1".equals(apiVersion)) {
+    return new OrderV1Response(order.getId(), order.getStatus());
+  } else {
+    return new OrderV2Response(order.getId(), order.getStatus(), order.getCreatedAt());
+  }
+}
+```
+
+Benefit: prevent breaking changes, safe API evolution.
+
+Pitfall: contract enforcement requires both parties (consumer + provider tightly coupled).
+
+---
+
+### Q493: What is external service fault tolerance?
+
+External service failures: network timeout, service crash, rate limiting.
+
+Retry with exponential backoff:
+```java
+@Service
+public class PaymentClient {
+  @Retry(maxAttempts = 3, backoff = @Backoff(delay = 1000, multiplier = 2))
+  public Payment charge(Order order) {
+    // Retry: 1s, 2s, 4s if fails
+    return externalPaymentGateway.charge(order);
+  }
+}
+```
+
+Fallback:
+```java
+@CircuitBreaker(fallbackMethod = "chargeFallback")
+public Payment charge(Order order) {
+  return externalPaymentGateway.charge(order);
+}
+
+public Payment chargeFallback(Order order, Exception e) {
+  // Queue for retry later
+  retryQueue.add(new PaymentRetry(order));
+  return new Payment(status = "PENDING_RETRY");
+}
+```
+
+Timeout (abort slow requests):
+```java
+@Timeout(value = 5L, unit = TimeUnit.SECONDS)
+public Payment charge(Order order) {
+  // Abort if takes > 5 seconds
+  return externalPaymentGateway.charge(order);
+}
+```
+
+Health check (detect unavailability):
+```java
+@Component
+public class PaymentGatewayHealthIndicator extends AbstractHealthIndicator {
+  @Override
+  protected void doHealthCheck(Health.Builder builder) {
+    try {
+      externalClient.ping();
+      builder.up();
+    } catch (Exception e) {
+      builder.down().withDetail("reason", e.getMessage());
+    }
+  }
+}
+```
+
+Benefit: resilience to external failures, graceful degradation.
+
+Pitfall: too many retries cascade (thundering herd); use exponential backoff + jitter.
+
+---
+
+### Q494: What is resource pooling and object reuse?
+
+Resource pooling: reuse expensive objects (connections, threads).
+
+Connection pooling (HikariCP):
+```yaml
+spring.datasource.hikari:
+  maximumPoolSize: 20 # reuse 20 connections
+  minimumIdle: 5
+  idleTimeout: 600000 # close idle after 10 min
+```
+
+Thread pooling:
+```java
+@Configuration
+public class ThreadPoolConfig {
+  @Bean
+  public TaskExecutor taskExecutor() {
+    ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+    executor.setCorePoolSize(10);
+    executor.setMaxPoolSize(50);
+    executor.setQueueCapacity(100);
+    executor.initialize();
+    return executor;
+  }
+}
+```
+
+Object pooling (Apache Commons Pool):
+```java
+public class OrderServiceObjectPool {
+  private ObjectPool<OrderProcessor> pool = new GenericObjectPool<>(
+    new BasePooledObjectFactory<OrderProcessor>() {
+      public OrderProcessor create() {
+        return new OrderProcessor(); // expensive to create
+      }
+      
+      public PooledObject<OrderProcessor> wrap(OrderProcessor obj) {
+        return new DefaultPooledObject<>(obj);
+      }
+    },
+    new GenericObjectPoolConfig<>().setMaxTotal(50)
+  );
+  
+  public void processOrder(Order order) throws Exception {
+    OrderProcessor processor = pool.borrowObject();
+    try {
+      processor.process(order);
+    } finally {
+      pool.returnObject(processor); // reuse
+    }
+  }
+}
+```
+
+Benefit: reduces creation/destruction overhead, improves throughput.
+
+Pitfall: pool exhaustion (all objects busy); monitor pool utilization.
+
+---
+
+### Q495: What is request deduplication and idempotency key?
+
+Idempotency key: unique request identifier, safe to retry.
+
+Implementation:
+```java
+@PostMapping("/orders")
+public ResponseEntity<Order> createOrder(
+  @RequestHeader("Idempotency-Key") String idempotencyKey,
+  @RequestBody CreateOrderRequest request) {
+  
+  // Check if already processed
+  IdempotentRequest existing = idempotencyKeyRepository.findByKey(idempotencyKey);
+  if (existing != null) {
+    return ResponseEntity.ok(existing.getResult());
+  }
+  
+  // Process new request
+  Order order = orderService.create(request);
+  idempotencyKeyRepository.save(new IdempotentRequest(idempotencyKey, order));
+  
+  return ResponseEntity.status(201).body(order);
+}
+```
+
+Client implementation:
+```java
+public Order createOrderWithIdempotency(CreateOrderRequest request) {
+  String idempotencyKey = UUID.randomUUID().toString();
+  
+  for (int attempt = 0; attempt < 3; attempt++) {
+    try {
+      HttpHeaders headers = new HttpHeaders();
+      headers.add("Idempotency-Key", idempotencyKey);
+      
+      HttpEntity<CreateOrderRequest> entity = new HttpEntity<>(request, headers);
+      ResponseEntity<Order> response = restTemplate.postForEntity(
+        "/orders", entity, Order.class);
+      
+      return response.getBody();
+    } catch (Exception e) {
+      if (attempt < 2) {
+        Thread.sleep((long) Math.pow(2, attempt) * 1000); // exponential backoff
+      } else {
+        throw e;
+      }
+    }
+  }
+  return null;
+}
+```
+
+Benefit: exactly-once semantics despite network failures, safe retries.
+
+Pitfall: idempotency key storage (expensive); use TTL.
+
+---
+
+### Q496: What is async request-response patterns?
+
+Traditional (synchronous request-response):
+```
+Client: POST /orders → wait
+Server: process → 201 Created { order }
+```
+
+Async request-response (202 Accepted):
+```
+Client: POST /orders → immediate 202 Accepted { requestId: "req123" }
+         poll GET /requests/req123 until complete
+
+Server: background task processes order → updates status
+```
+
+Implementation:
+```java
+@PostMapping("/orders")
+public ResponseEntity<AsyncResponse> createOrderAsync(@RequestBody CreateOrderRequest request) {
+  String requestId = UUID.randomUUID().toString();
+  
+  // Queue for async processing
+  asyncExecutor.submit(() -> {
+    try {
+      Order order = orderService.create(request);
+      asyncRequestRepository.updateStatus(requestId, "COMPLETED", order);
+    } catch (Exception e) {
+      asyncRequestRepository.updateStatus(requestId, "FAILED", e.getMessage());
+    }
+  });
+  
+  return ResponseEntity
+    .accepted()
+    .location(URI.create("/requests/" + requestId))
+    .body(new AsyncResponse(requestId, "Processing"));
+}
+
+@GetMapping("/requests/{requestId}")
+public ResponseEntity<RequestStatus> getRequestStatus(@PathVariable String requestId) {
+  AsyncRequest request = asyncRequestRepository.findById(requestId);
+  
+  if (request.getStatus().equals("COMPLETED")) {
+    return ResponseEntity.ok(new RequestStatus(request.getStatus(), request.getResult()));
+  } else if (request.getStatus().equals("PROCESSING")) {
+    return ResponseEntity.accepted().body(new RequestStatus(request.getStatus(), null));
+  } else {
+    return ResponseEntity.status(500).body(new RequestStatus(request.getStatus(), request.getError()));
+  }
+}
+```
+
+Benefit: handle long-running operations, HTTP timeout avoidance.
+
+Pitfall: client complexity (polling, state management).
+
+---
+
+### Q497: What is circuit breaker metrics and monitoring?
+
+Monitor circuit breaker health:
+
+Metrics:
+```
+circuit_breaker_calls_total{state="closed"} 1000
+circuit_breaker_calls_total{state="open"} 50
+circuit_breaker_calls_total{state="half_open"} 5
+
+circuit_breaker_error_rate{service="payment"} 0.25 # 25% error rate
+```
+
+States tracking:
+```java
+@Component
+public class CircuitBreakerMetrics {
+  @Autowired MeterRegistry meterRegistry;
+  
+  public void recordCircuitBreakerState(String serviceName, CircuitBreaker.State state) {
+    meterRegistry.gauge("circuit_breaker_state", 
+      Tags.of("service", serviceName, "state", state.toString()),
+      () -> state.equals(State.CLOSED) ? 1 : 0);
+  }
+  
+  public void recordErrorRate(String serviceName, double errorRate) {
+    meterRegistry.gauge("circuit_breaker_error_rate",
+      Tags.of("service", serviceName),
+      errorRate);
+  }
+}
+```
+
+Alerting:
+```yaml
+alerts:
+  circuit_breaker_open:
+    condition: circuit_breaker_state{state="OPEN"} > 0
+    duration: 5m
+    action: page_oncall
+```
+
+Dashboard (Grafana):
+- Circuit breaker states (pie chart)
+- Error rates over time (line graph)
+- Service health status (table)
+
+Benefit: visibility into fault tolerance, early warning.
+
+Pitfall: alert fatigue (too many alerts); tune thresholds.
+
+---
+
+### Q498: What is sticky sessions vs stateless?
+
+Sticky sessions: route requests to same server (maintain local state).
+
+```
+Client1 → Server A (session state stored in memory)
+Client1 → Server A (same server, session accessible)
+```
+
+Stateless: no session state on server (store in external store).
+
+```
+Client1 → Server A (no session state)
+Client1 → Server B (session fetched from Redis)
+```
+
+Sticky session implementation:
+```yaml
+spring:
+  cloud:
+    gateway:
+      routes:
+      - id: order-service
+        uri: lb:order-service # load balancer with sticky sessions
+        predicates:
+        - Path=/api/orders/**
+        filters:
+        - StripPrefix=2
+```
+
+Stateless implementation:
+```java
+@RestController
+public class OrderController {
+  @PostMapping("/login")
+  public ResponseEntity<AuthResponse> login(@RequestBody LoginRequest request) {
+    User user = userService.authenticate(request);
+    String token = jwtProvider.generateToken(user);
+    
+    return ResponseEntity.ok(new AuthResponse(token));
+  }
+  
+  @GetMapping("/orders")
+  public ResponseEntity<List<Order>> listOrders(@RequestHeader("Authorization") String token) {
+    User user = jwtProvider.validateToken(token);
+    return ResponseEntity.ok(orderService.getOrders(user.getId()));
+  }
+}
+```
+
+Trade-off: sticky sessions (simple, local state), stateless (scalable, no affinity needed).
+
+Pitfall: sticky sessions prevent load balancing; stateless requires distributed session store.
+
+---
+
+### Q499: What is request decompression and compression?
+
+Compression: reduce response size (network bandwidth).
+
+Gzip compression (HTTP negotiation):
+```
+Client: Accept-Encoding: gzip, deflate
+
+Server:
+  Content-Encoding: gzip
+  {compressed response body}
+
+Client decompresses automatically
+```
+
+Spring Boot configuration:
+```yaml
+server:
+  compression:
+    enabled: true
+    min-response-size: 1024 # only compress > 1KB
+    mimetypes:
+    - application/json
+    - application/xml
+    - text/html
+```
+
+Custom compression:
+```java
+@RestController
+public class OrderController {
+  @GetMapping("/orders")
+  public ResponseEntity<List<Order>> listOrders(
+    @RequestHeader(value = "Accept-Encoding", required = false) String encoding) {
+    
+    List<Order> orders = orderService.getAllOrders();
+    
+    if (encoding != null && encoding.contains("gzip")) {
+      byte[] compressed = compress(orders);
+      return ResponseEntity.ok()
+        .header("Content-Encoding", "gzip")
+        .body(compressed);
+    }
+    
+    return ResponseEntity.ok(orders);
+  }
+  
+  private byte[] compress(Object obj) throws IOException {
+    ByteArrayOutputStream out = new ByteArrayOutputStream();
+    try (GZIPOutputStream gzip = new GZIPOutputStream(out)) {
+      gzip.write(objectMapper.writeValueAsBytes(obj));
+    }
+    return out.toByteArray();
+  }
+}
+```
+
+Benefit: reduce bandwidth (50-80% reduction), faster transfers.
+
+Pitfall: compression overhead (CPU); only compress large responses.
+
+---
+
+### Q500: What is architectural evolution and scaling patterns?
+
+System starts monolithic, evolves to distributed.
+
+Phase 1: Monolith (single deployable unit)
+```
+Pros: simple deployment, easy debugging, transactional consistency
+Cons: hard to scale, tight coupling, hard to change
+```
+
+Phase 2: Modular monolith (internal boundaries, separate deploy)
+```
+Pros: loose coupling within monolith, faster deployments
+Cons: still single process, shared resources
+```
+
+Phase 3: Microservices (independent services)
+```
+Pros: independent scaling, independent deployments, team autonomy
+Cons: operational complexity, distributed transaction challenges
+```
+
+Phase 4: Serverless/FaaS (function-as-a-service)
+```
+Pros: zero-management, pay-per-execution
+Cons: vendor lock-in, cold starts, debugging complexity
+```
+
+Migration pattern:
+```
+1. Strangler pattern: gradually replace monolith functions
+   - Old: OrderService (monolithic)
+   - New: OrderServiceV2 (microservice)
+   - Router: smart routing (% traffic to new service)
+
+2. API gateway: serve as proxy during transition
+   - Clients → API Gateway → monolith or microservices
+
+3. Event streaming: trigger async workflows
+   - Monolith publishes events
+   - Microservices subscribe and replicate data
+```
+
+Example (order service migration):
+```
+Monolith: handles orders + payments + inventory
+
+Step 1: Extract payment service
+  - Monolith: publishes OrderCreatedEvent
+  - PaymentService: subscribes, processes
+  - Router: 1% traffic to new service
+
+Step 2: Validate, then increase to 50%, then 100%
+
+Step 3: Extract inventory service (repeat)
+
+Final: 3 services (order, payment, inventory) replacing monolith
+```
+
+Benefit: continuous improvement, reduced risk (gradual migration).
+
+Pitfall: architectural changes have operational cost; plan carefully.
+
+---
+
+### Q501: What's the difference between useMemo and useCallback?
+
+`useMemo` memoizes a computed value; `useCallback` memoizes a function reference. Use `useMemo` when an expensive calculation should be skipped on re-renders; use `useCallback` to prevent child re-renders when passing functions as props.
+
+---
+
+### Q502: When should you use useLayoutEffect instead of useEffect?
+
+Use `useLayoutEffect` for DOM reads/writes that must happen before the browser paints (synchronous). `useEffect` runs after paint and is preferred for side effects that don't block rendering.
+
+---
+
+### Q503: What is React Fiber?
+
+Fiber is the reimplementation of React's reconciliation algorithm allowing incremental rendering and priorities. It enables interruptible work, better scheduling, and features like Suspense and concurrent rendering.
+
+---
+
+### Q504: How does React's reconciliation determine updates?
+
+It compares element types; same type -> update props and reconcile children, different type -> unmount and mount. Keys are used to match elements in lists to avoid unnecessary reorders.
+
+---
+
+### Q505: What causes hydration mismatches and how to fix them?
+
+Mismatch happens when server-rendered HTML doesn't match client render (random IDs, date/time, non-deterministic code). Fix by making render deterministic, delaying client-only code with checks, or using `useEffect` for client-only DOM changes.
+
+---
+
+### Q506: Explain React Suspense for data fetching.
+
+Suspense lets components “suspend” rendering until async data is ready. Combined with a data-fetching library that throws promises, Suspense shows fallback UI while waiting and simplifies loading states.
+
+---
+
+### Q507: What are React Server Components (RSC)?
+
+RSCs are components rendered on the server that can access server-only resources and stream HTML to clients, reducing client bundle size by keeping non-interactive logic server-side.
+
+---
+
+### Q508: How to avoid prop drilling in React?
+
+Use Context API, state colocated higher, or patterns like composition, render props, or a state container (Redux/MobX) to avoid passing props deeply through many components.
+
+---
+
+### Q509: When to use Context vs Redux?
+
+Context is for passing data without prop-drilling (theming, locale). Redux is better for complex global state with middleware, time-travel debugging, and predictable reducers.
+
+---
+
+### Q510: What are Error Boundaries?
+
+Error boundaries are class components implementing `componentDidCatch` and `getDerivedStateFromError` to catch render-time errors of child components and show fallback UI; hooks cannot implement them directly.
+
+---
+
+### Q511: How does memoization with React.memo work?
+
+`React.memo` wraps a component to skip re-render when props are shallowly equal. For complex props provide a custom comparison function.
+
+---
+
+### Q512: What's the difference between controlled and uncontrolled components?
+
+Controlled components have value driven by React state (`value` + `onChange`). Uncontrolled components manage their own DOM state and are accessed via refs (`defaultValue`).
+
+---
+
+### Q513: How to optimize large lists in React?
+
+Use windowing/virtualization (react-window/react-virtualized), stable keys, avoid inline functions, and memoize row components to minimize DOM and reconciliation costs.
+
+---
+
+### Q514: What are portals in React?
+
+Portals render children into a DOM node outside the parent hierarchy, useful for modals, tooltips, and overlays while preserving React event bubbling.
+
+---
+
+### Q515: Explain React's synthetic event system.
+
+React uses a cross-browser synthetic event wrapper for performance and consistency. Events are delegated at the root and pooled for reuse (pooling removed in newer React versions).
+
+---
+
+### Q516: How to handle forms efficiently in React?
+
+Use controlled components for validation and immediate feedback; for complex forms consider libraries like Formik, React Hook Form for performance and easier validation.
+
+---
+
+### Q517: What is reconciliation of keyed lists?
+
+Keys identify elements across renders; stable unique keys allow React to match, reuse, and reorder elements rather than re-create them—improving performance and preserving state.
+
+---
+
+### Q518: How to prevent unnecessary re-renders?
+
+Memoize components (`React.memo`), functions (`useCallback`), values (`useMemo`), avoid creating new props inline, and lift state appropriately to reduce changing props.
+
+---
+
+### Q519: Explain render props pattern.
+
+Render props pass a function as a prop to control what a component renders, enabling logic reuse. Example: `<DataLoader>{data => <UI data={data}/>}</DataLoader>`.
+
+---
+
+### Q520: What are Higher-Order Components (HOC)?
+
+HOCs are functions that take a component and return an enhanced component, used to share cross-cutting concerns (e.g., withRouter, connect). Prefer hooks for new code.
+
+---
+
+### Q521: What is Strict Mode in React?
+
+StrictMode activates additional checks and warnings (like identifying unsafe lifecycles). In development it may double-invoke certain functions to surface bugs, but has no effect in production.
+
+---
+
+### Q522: How does lazy loading work in React?
+
+`React.lazy` + `Suspense` defers loading of component code until it's rendered, reducing initial bundle size. Use `import()` to split code at route or component boundaries.
+
+---
+
+### Q523: What's event pooling and is it still used?
+
+Older React versions pooled SyntheticEvent objects for performance; modern React no longer pools events, and accessing event properties asynchronously may require copying values.
+
+---
+
+### Q524: How to test React components effectively?
+
+Use React Testing Library for behavior-driven tests, Jest for unit tests and mocking. Prefer testing user interactions over implementation details.
+
+---
+
+### Q525: What is hydration and why is it important?
+
+Hydration attaches React event handlers to server-rendered HTML on the client, enabling interactivity without re-rendering the whole UI. Proper hydration reduces time-to-interactive.
+
+---
+
+### Q526: How to measure React performance in production?
+
+Use Web Vitals (LCP, FID/INP, CLS), profiling with React DevTools Profiler, telemetry, and real-user monitoring (RUM) to capture real-world metrics.
+
+---
+
+### Q527: What are common useEffect pitfalls?
+
+Missing dependency arrays causing stale closures or infinite loops, running expensive sync work in effects, and failing to clean up subscriptions leading to memory leaks.
+
+---
+
+### Q528: Differences between useRef and useState?
+
+`useRef` holds a mutable value that persists across renders without triggering re-renders; `useState` triggers re-renders when updated and is used for reactive UI updates.
+
+---
+
+### Q529: How to implement code splitting for routes?
+
+Wrap route components with `React.lazy` and show fallbacks with `Suspense`. Tools like React Router support lazy-loaded route components to split bundles.
+
+---
+
+### Q530: What is tree shaking and how to enable it?
+
+Tree shaking removes unused exports during bundling. Use ES modules (import/export) and bundlers like webpack/Rollup configured for production mode to enable tree shaking.
+
+---
+
+### Q531: How to optimize images in React apps?
+
+Use responsive images (`srcset`), modern formats (WebP/AVIF), lazy loading, CDNs, and image optimization plugins or services (Imgix, Cloudinary) to reduce payloads.
+
+---
+
+### Q532: What is React Testing Library's guiding principle?
+
+Test the app as users interact with it—query by text/role/label—avoid testing implementation details to keep tests resilient to refactors.
+
+---
+
+### Q533: How to handle accessibility in React?
+
+Use semantic HTML, ARIA attributes when necessary, keyboard navigation, focus management, and tools like axe or Lighthouse to audit accessibility.
+
+---
+
+### Q534: Explain Concurrent Mode advantages.
+
+Concurrent features (scheduling, interruptions) allow React to prepare multiple versions of UI and keep the app responsive by yielding work to the browser.
+
+---
+
+### Q535: What is the role of keys in reconciliation?
+
+Keys give elements stable identity between renders. Avoid using index as key when order changes because it can break state preservation and lead to bugs.
+
+---
+
+### Q536: How to secure a React app against XSS?
+
+Avoid `dangerouslySetInnerHTML`, sanitize external HTML, escape user input, use Content Security Policy (CSP), and keep dependencies up to date.
+
+---
+
+### Q537: Explain memoization pitfalls.
+
+Overuse of memoization can add complexity and memory overhead; only memoize when renders are expensive or props change infrequently.
+
+---
+
+### Q538: How to handle internationalization (i18n)?
+
+Use libraries like react-intl or i18next, extract strings, support pluralization and formatting, and lazy-load locale bundles for performance.
+
+---
+
+### Q539: What is server-side rendering benefit for SEO?
+
+SSR renders full HTML for crawlers and social previews, improving SEO and perceived load time; combine with hydration for interactivity.
+
+---
+
+### Q540: How to implement optimistic UI updates?
+
+Update UI immediately assuming success (optimistically), rollback on failure, and handle server confirmations—use unique temp IDs for pending items.
+
+---
+
+### Q541: What are React DevTools Profiler traces used for?
+
+They show component render times, commit durations, and why components rendered (prop/state changes), helping identify bottlenecks.
+
+---
+
+### Q542: Explain SuspenseList briefly.
+
+`SuspenseList` coordinates reveal order for multiple Suspense boundaries, allowing cascading or simultaneous reveal behaviors for better UX when loading multiple components.
+
+---
+
+### Q543: How to manage focus for accessibility in SPAs?
+
+Move focus to meaningful elements on navigation, use `focus()` with refs, add skip links, and announce changes with ARIA live regions when appropriate.
+
+---
+
+### Q544: What is hydration mismatch debugging approach?
+
+Compare server and client outputs, log rendered markup, remove non-deterministic code from render, and isolate components to find mismatch sources.
+
+---
+
+### Q545: How to reduce initial JS bundle size?
+
+Code-split, remove polyfills you don't need, use lighter alternatives, tree-shake, lazy-load, and adopt modern bundlers like Vite for faster builds.
+
+---
+
+### Q546: What are React performance budgets?
+
+Set targets (bundle size, TTI, LCP), track budgets in CI, and fail builds that exceed thresholds to keep app fast and predictable.
+
+---
+
+### Q547: How to test components with async effects?
+
+Use `waitFor`/`findBy` utilities in React Testing Library to await UI changes, and mock network calls to control timing and outcomes.
+
+---
+
+### Q548: Explain useTransition hook.
+
+`useTransition` marks updates as non-urgent, allowing React to keep UI responsive by showing intermediate states while transitioning to new content.
+
+---
+
+### Q549: What's the best way to handle authentication in React?
+
+Keep tokens in memory or httpOnly cookies for security, avoid localStorage for sensitive tokens, and protect routes with client/server checks.
+
+---
+
+### Q550: How to plan for progressive enhancement in React?
+
+Ensure basic functionality works without JS (server-rendered content), progressively add interactivity, and avoid blocking critical content on JS bundle loading.
+
+---
+
+### Q551: What is the virtual DOM and why does React use it?
+
+The virtual DOM is an in-memory representation of the real DOM. React uses it to batch updates, calculate differences (diffs), and apply only necessary DOM changes, improving performance.
+
+---
+
+### Q552: How does React's useReducer hook work?
+
+`useReducer` manages complex state by dispatching actions to a reducer function that returns new state. More scalable than `useState` for interdependent state values.
+
+---
+
+### Q553: What are the benefits of using TypeScript with React?
+
+Type safety catches errors at compile time, improves IDE autocomplete, documents component APIs, and makes refactoring safer and more confident.
+
+---
+
+### Q554: How to optimize React app bundle size?
+
+Use dynamic imports with lazy loading, remove unused dependencies, analyze bundles with tools like `webpack-bundle-analyzer`, and switch to lighter alternatives (preact, solid.js for some cases).
+
+---
+
+### Q555: What are controlled vs uncontrolled form inputs?
+
+Controlled inputs have their value driven by state with onChange handlers (predictable). Uncontrolled inputs use refs to read values directly from the DOM when needed.
+
+---
+
+### Q556: How to handle global state with Context API efficiently?
+
+Split contexts by concern, memoize provider value, use custom hooks to expose context, and consider splitting into multiple Contexts to avoid unnecessary re-renders.
+
+---
+
+### Q557: What is the difference between shallow and deep equality?
+
+Shallow equality checks if object references are the same (===). Deep equality recursively compares all nested values. React uses shallow for props/state changes by default.
+
+---
+
+### Q558: How to implement authentication persistence in React?
+
+Store auth tokens in httpOnly cookies (secure, no JS access) or memory, check hydration/app load for persisted session, and refresh tokens silently before expiry.
+
+---
+
+### Q559: Explain the concept of component composition.
+
+Building UI by combining smaller reusable components rather than inheritance. Leads to flexible, maintainable code and better separation of concerns.
+
+---
+
+### Q560: What are React Hooks rules and why do they matter?
+
+Hooks must be called at the top level (not in conditions/loops) and only from React function components. Ensures consistent hook order across renders for state access.
+
+---
+
+### Q561: How to test custom React Hooks?
+
+Use `@testing-library/react-hooks` (or built-in renderHook in modern versions) to test hooks in isolation, mocking dependencies and asserting state/side effects.
+
+---
+
+### Q562: What is the difference between props and state?
+
+Props are read-only input passed to components (immutable). State is mutable data owned by a component that triggers re-renders when updated.
+
+---
+
+### Q563: How to defer non-critical updates in React?
+
+Use `useDeferredValue` or `useTransition` to mark updates as low-priority, allowing React to prioritize user input and keep UI responsive.
+
+---
+
+### Q564: Explain the concept of lifting state up.
+
+Moving state from a child to a shared parent component to synchronize state across siblings. Enables data flow coordination without prop drilling if a single source of truth is needed.
+
+---
+
+### Q565: How to implement optimistic updates with error recovery?
+
+Update UI immediately, store pending change, rollback on server error, and retry with user confirmation or automatic backoff.
+
+---
+
+### Q566: What is the render phase vs commit phase in React?
+
+Render phase calculates changes (pure, can be paused), commit phase applies changes to DOM (side effects allowed). Effects run after commit.
+
+---
+
+### Q567: How to handle keyboard accessibility in React components?
+
+Listen for keydown/keyup, support Tab for focus navigation, Escape to dismiss modals, Enter/Space for activations, and announce changes via ARIA live regions.
+
+---
+
+### Q568: What is the purpose of keys in React lists?
+
+Keys give list items stable identity across renders, preventing state loss and incorrect reordering when list items are rearranged or filtered.
+
+---
+
+### Q569: How to implement dark mode toggle in React?
+
+Store preference in state/context, apply CSS classes or theme variables on root element, persist to localStorage, and respect system preference via `prefers-color-scheme`.
+
+---
+
+### Q570: Explain the concept of controlled components in forms.
+
+Form inputs controlled by React state; each input change updates state, and state value drives the input display. Enables validation, conditional rendering, and programmatic form control.
+
+---
+
+### Q571: What are the benefits of React Fragments?
+
+Allow grouping multiple elements without a wrapper div, reducing DOM clutter, improving performance (fewer nodes), and avoiding layout issues from extra divs.
+
+---
+
+### Q572: How to implement infinite scroll in React?
+
+Use Intersection Observer API to detect scroll near bottom, fetch next page on trigger, append items to list, and show loading indicator between fetches.
+
+---
+
+### Q573: What is the impact of key={index} in lists?
+
+Using index as key breaks component state when list reorders. Items may display wrong state. Use unique, stable identifiers (IDs) from data instead.
+
+---
+
+### Q574: How to implement search with debounce in React?
+
+Debounce onChange handler using `useRef` and `setTimeout`, cancel previous timer on new input, and fetch results only after user stops typing (improves performance).
+
+---
+
+### Q575: What are React's built-in performance profiling tools?
+
+React DevTools Profiler tab shows render times and why components re-rendered. Use it to identify bottlenecks before optimizing.
+
+---
+
+### Q576: How to implement form validation with React Hook Form?
+
+Use register to bind inputs, define validation rules, and display errors. Handles uncontrolled inputs efficiently with minimal re-renders.
+
+---
+
+### Q577: Explain the purpose of dangerouslySetInnerHTML.
+
+Allows setting raw HTML strings in React (bypassing escaping). Use only for trusted content (Markdown, rich text editors); avoid user-generated content to prevent XSS.
+
+---
+
+### Q578: How to handle file uploads in React?
+
+Use file input with change handler, read file with FileReader API or fetch with FormData, and upload via fetch/axios with progress tracking.
+
+---
+
+### Q579: What is React's StrictMode warning about double state updates?
+
+In development, React intentionally double-invokes effects and render functions to surface side effects. Production is not affected; fix by ensuring pure effects.
+
+---
+
+### Q580: How to implement custom hooks for reusable logic?
+
+Extract stateful logic into a function starting with "use", call other hooks, and return state/functions. Custom hooks enable logic sharing without render props or HOCs.
+
+---
+
+### Q581: What are the performance implications of useEffect dependencies?
+
+Empty deps = runs once; missing deps = runs every render; correct deps = runs when dependencies change. Wrong deps cause stale closures or unnecessary re-runs.
+
+---
+
+### Q582: How to implement pagination in React?
+
+Maintain page state, calculate offset/limit, fetch page on state change, disable prev/next buttons at boundaries, and preserve scroll position or focus.
+
+---
+
+### Q583: Explain the virtual DOM diffing algorithm.
+
+React compares old and new virtual trees, identifying changed elements, then applies minimal DOM updates. Keys help match elements and preserve state during reorders.
+
+---
+
+### Q584: How to implement tooltips in React?
+
+Use portals to render outside hierarchy, position with CSS or libraries (Popper.js), show on hover/focus, hide on blur/escape, and only render when visible.
+
+---
+
+### Q585: What is the role of the ref in React?
+
+Refs provide direct access to DOM elements or class instance values, bypassing React's declarative flow. Use sparingly for focus, text selection, media playback, or integrations.
+
+---
+
+### Q586: How to prevent memory leaks in React?
+
+Unsubscribe from listeners, cancel async requests, and clear timers in useEffect cleanup functions. Especially important for long-lived components.
+
+---
+
+### Q587: Explain the concept of prop drilling and solutions.
+
+Props passed through many intermediate components to reach a distant child. Solve with Context API, render props, custom hooks, or state containers (Redux).
+
+---
+
+### Q588: How to implement search autocomplete in React?
+
+Debounce user input, fetch suggestions, cache results, display dropdown, handle keyboard navigation, and close on selection or blur.
+
+---
+
+### Q589: What is the difference between controlled and uncontrolled refs?
+
+Controlled refs update via callback on every render; uncontrolled refs hold a persistent reference. Uncontrolled is simpler but less flexible.
+
+---
+
+### Q590: How to implement breadcrumb navigation in React?
+
+Track current location from URL or router, build path list, render links for each ancestor level, mark current page as inactive, and handle click navigation.
+
+---
+
+### Q591: What are the benefits of using custom hooks over render props?
+
+Custom hooks are simpler to read and compose, avoid the "wrapper hell" of nested render props, and integrate naturally with other hooks.
+
+---
+
+### Q592: How to implement modal dialogs in React?
+
+Create modal component with portal, control visibility with state, disable body scroll, add backdrop, focus manager, and close on escape/backdrop click.
+
+---
+
+### Q593: Explain React's concurrent features briefly.
+
+Concurrent rendering allows React to pause and resume work between renders, prioritize high-urgency updates, and keep the app responsive even during heavy computations.
+
+---
+
+### Q594: How to handle date and time in React?
+
+Use libraries like Day.js or date-fns (lighter than Moment.js), store dates as UTC ISO strings, format for display only, and validate user input.
+
+---
+
+### Q595: What is the impact of inline functions as props?
+
+Inline functions create new references on every render, breaking React.memo and causing unnecessary child re-renders. Use useCallback to memoize function references.
+
+---
+
+### Q596: How to implement a notification/toast system in React?
+
+Use context or a custom hook to manage toast state, render toasts in a portal, auto-dismiss with setTimeout, allow manual dismiss, and queue multiple toasts.
+
+---
+
+### Q597: Explain the concept of pure functions in React.
+
+Pure functions return the same output for the same input, with no side effects. Components should be pure to ensure consistent rendering and enable optimizations.
+
+---
+
+### Q598: How to implement client-side filtering and sorting?
+
+Store filters/sort state, apply to data array using Array methods, memoize results to avoid recalculation, and validate filter/sort parameters.
+
+---
+
+### Q599: What are React's limitations and when to use alternatives?
+
+React excels at interactive UIs; for static content, consider other tools. Limitations: learning curve, complexity for simple apps, and bundle size. Alternatives: Svelte, Vue, Solid.js.
+
+---
+
+### Q600: How to plan a React project structure for scalability?
+
+Organize by feature (pages, components, hooks, utils per feature), separate concerns (styling, testing), use a clear naming convention, and establish architectural boundaries early.
+
+---
+
+### Q601: What's the relationship between React state and ReactDOM rendering?
+
+React state lives in component memory; ReactDOM renders that state to the DOM. State change triggers re-render via ReactDOM.render/createRoot.
+
+---
+
+### Q602: How to optimize repeated API calls in React?
+
+Cache responses in state or Context, dedupe requests with request coalescing, use SWR or React Query for automatic stale-while-revalidate, and implement request timeouts.
+
+---
+
+### Q603: What are React's key limitations for real-time apps?
+
+React updates are batched and asynchronous; WebSockets/Server-Sent Events need separate handling. Use libraries like Socket.io or consider real-time frameworks (Meteor) for active sync needs.
+
+---
+
+### Q604: How to handle complex nested state updates efficiently?
+
+Use Immer library to write mutations naturally (immutably applied), adopt useReducer for structured state machines, or flatten state shape to minimize deep nesting.
+
+---
+
+### Q605: What is the purpose of React's `key` prop in reconciliation?
+
+`key` gives elements stable identity across renders, allowing React to preserve component state and DOM position when the list reorders, avoiding bugs and unnecessary re-renders.
+
+---
+
+### Q606: How to implement a real-time collaborative editing UI?
+
+Use operational transformation or conflict-free replicated data types (CRDTs), sync changes via WebSocket, show presence cursors, and handle concurrent edits gracefully.
+
+---
+
+### Q607: What are React's best practices for large-scale state management?
+
+Use Redux/MobX for predictable updates, normalize state shape (flat, non-nested), split stores by domain, leverage middleware for side effects, and use selectors for derived state.
+
+---
+
+### Q608: How to debug React performance issues in production?
+
+Use Web Vitals monitoring (CLS, LCP, FID), capture session replays with tools like Sentry, analyze bundle size with bundlesize or webpack-bundle-analyzer, and use profiling in DevTools.
+
+---
+
+### Q609: What is the difference between React.memo and useMemo?
+
+`React.memo` prevents component re-render if props are shallowly equal; `useMemo` memoizes a computed value inside a component. Use memo for component optimization, useMemo for expensive calculations.
+
+---
+
+### Q610: How to implement drag-and-drop with React?
+
+Use react-beautiful-dnd or react-dnd libraries for high-level APIs, or implement with onMouseDown/onMouseMove/onMouseUp for custom behavior; maintain dragged item state and update order on drop.
+
+---
+
+### Q611: What is React's approach to error boundaries vs error handling?
+
+Error boundaries catch render-time errors and prevent full app crash. For runtime/async errors, use try/catch, error state, fallback UI, or libraries like react-error-boundary.
+
+---
+
+### Q612: How to implement form state synchronization across tabs?
+
+Use localStorage or sessionStorage to sync form state, listen to `storage` events for changes, or use Portals with a shared context for cross-tab communication.
+
+---
+
+### Q613: What are the tradeoffs of useCallback vs inline functions?
+
+`useCallback` memoizes function reference (better for props) but adds memory overhead; inline functions are simpler but break React.memo. Use callback when passing to optimized children.
+
+---
+
+### Q614: How to optimize CSS-in-JS performance in React?
+
+Use styled-components with babel plugin, avoid creating styles inside render, leverage automatic critical CSS extraction, and consider Tailwind CSS for smaller bundles and better performance.
+
+---
+
+### Q615: What is React Query (TanStack Query) advantage?
+
+React Query manages server state automatically: caching, synchronization, background refetching, stale-while-revalidate, retry logic, and deduplication without Redux boilerplate.
+
+---
+
+### Q616: How to implement PWA features in a React app?
+
+Register service worker (offline support), add Web App Manifest (installable), implement cache strategies (Cache-first, Network-first), and handle push notifications.
+
+---
+
+### Q617: What's the impact of preloading and prefetching in React apps?
+
+Preload critical resources (JS, fonts), prefetch likely next routes, use `<link rel="preconnect">` for DNS. Improves perceived performance and Time-to-Interactive.
+
+---
+
+### Q618: How to prevent XSS attacks in React?
+
+Escape user input (React does by default), avoid `dangerouslySetInnerHTML`, use libraries like DOMPurify for user-generated HTML, and implement Content Security Policy headers.
+
+---
+
+### Q619: What is the relationship between React render cycles and browser repaints?
+
+React renders to virtual DOM (fast), then reconciles, applying minimal DOM changes. Browser paints only changed elements. Fewer DOM mutations = fewer repaints.
+
+---
+
+### Q620: How to handle long-running operations in React without blocking UI?
+
+Use Web Workers for CPU-intensive tasks, split work into chunks with setTimeout, or use requestIdleCallback to defer non-critical work until browser is idle.
+
+---
+
+### Q621: What are React Suspense limitations for data fetching?
+
+Suspense requires libraries that throw promises, doesn't handle retries/errors natively, and can cause "waterfall" requests if nested. Use React Query or server-side fetching for better control.
+
+---
+
+### Q622: How to implement a stable focus management system in React?
+
+Store focused element ref/ID in state, restore focus after modal closes, use ARIA `aria-live` for announcements, and skip links for keyboard navigation in SPAs.
+
+---
+
+### Q623: What is the cost of context re-renders when deeply nested?
+
+Context value changes cause all consumers to re-render regardless of actual value change. Mitigate by splitting contexts by concern or memoizing child components.
+
+---
+
+### Q624: How to optimize images in React without external serverless?
+
+Use responsive srcset, lazy-load with Intersection Observer, convert to WebP/AVIF, compress on build with imagemin-webpack-plugin, and implement native lazy loading.
+
+---
+
+### Q625: What is the advantage of Next.js over plain React?
+
+Next.js provides: server-side rendering, static generation, built-in routing, API routes, image optimization, automatic code-splitting—reducing boilerplate and improving SEO/performance.
+
+---
+
+### Q626: How to handle authentication state across page reloads in React?
+
+Check token from httpOnly cookie or local storage on app mount, restore session, and validate token with server. Use context or Redux to maintain authentication state.
+
+---
+
+### Q627: What are React's constraints for animations?
+
+React batches updates; use CSS animations for smoothness, requestAnimationFrame for precise timing, or libraries like Framer Motion for complex orchestration without blocking JS.
+
+---
+
+### Q628: How to structure tests for complex React components?
+
+Test behavior (user interactions) over implementation; use React Testing Library, mock external dependencies, test edge cases and error states, and maintain fast test suites.
+
+---
+
+### Q629: What is automatic batching in React 18?
+
+React 18 batches state updates automatically (even async), reducing re-renders. Disable with `flushSync` if immediate DOM update needed (rare).
+
+---
+
+### Q630: How to implement a multi-language support system efficiently?
+
+Use context or library (react-intl, i18next), load locale on app mount, cache translations, support pluralization and formatting, and avoid translating every string inline.
+
+---
+
+### Q631: What's the role of `trackingState` in React debugging?
+
+Tracking state changes helps identify unexpected mutations or stale state. Use React DevTools, Redux DevTools, or logging to monitor state flow throughout component lifecycle.
+
+---
+
+### Q632: How to implement a responsive layout without media queries?
+
+Use CSS Grid with auto-fit/minmax, Flexbox with flexible sizing, CSS Container Queries for responsive component logic, or Tailwind's responsive prefixes (sm:, md:, lg:).
+
+---
+
+### Q633: What is the overhead of component composition in React?
+
+Each component adds a small overhead (wrapper divs in portal, context consumers). Optimize by avoiding unnecessary wrapper components or using React.Fragment to eliminate divs.
+
+---
+
+### Q634: How to test async React components effectively?
+
+Use `waitFor` to await state updates, mock fetch with proper promises, test loading/error/success states separately, and avoid async/await in test setup (use beforeEach).
+
+---
+
+### Q635: What's the advantage of Static Generation over SSR in Next.js?
+
+Static generation is faster (precomputed HTML), cacheable on CDN, and reduces server load. Downside: can't personalize per-user without client-side hydration. Use ISR (Incremental Static Regeneration) for stale data.
+
+---
+
+### Q636: How to implement a notification system that persists across navigation?
+
+Use a top-level context for notifications, render Portal outside React tree, manage queue with IDs, auto-dismiss with timers, and allow manual dismiss.
+
+---
+
+### Q637: What is the React mental model for async operations?
+
+Treat async results as state updates. On mount, async operation starts. Result updates state → re-render. Cleanup on unmount. Think in terms of side effects, not imperative callbacks.
+
+---
+
+### Q638: How to optimize Redux selector performance?
+
+Use `reselect` to memoize selectors, avoid creating new arrays/objects in selectors, split selectors by concern, and normalize state to avoid deep cloning.
+
+---
+
+### Q639: What's the role of `Object.freeze` in React state?
+
+Freezing state prevents accidental mutations in development. Doesn't prevent state re-renders; use only for debugging. Immer library is better for enforcing immutability.
+
+---
+
+### Q640: How to implement a resilient offline-first React app?
+
+Use service workers for caching, sync pending changes when online (Background Sync API), show conflict resolution UI, and persist app state to IndexedDB.
+
+---
+
+### Q641: What are React's accessibility gotchas?
+
+Focus management in SPAs, announcement of dynamic content via aria-live, proper heading hierarchy, color contrast, keyboard navigation, and testing with screen readers.
+
+---
+
+### Q642: How to handle payment flows in React securely?
+
+Never store sensitive card data client-side; use Stripe Elements or similar to tokenize, send token to server, verify server-side. Implement PCI compliance (use hosted forms).
+
+---
+
+### Q643: What's the impact of CSS-in-JS on React performance?
+
+CSS-in-JS adds runtime overhead (parsing, injection). Mitigate with babel plugins for compile-time CSS extraction, and consider Tailwind or CSS Modules for static styles.
+
+---
+
+### Q644: How to implement feature detection and graceful degradation in React?
+
+Check API availability (navigator.geolocation, localStorage), provide fallback UI, progressive enhancement (basic works without JS), and inform users of limited functionality.
+
+---
+
+### Q645: What is React's approach to immutability without Immer?
+
+Spread operators (`...obj`, `[...arr]`), Array methods (map, filter, concat), and Object.assign. Verbose for deep updates; Immer reduces boilerplate significantly.
+
+---
+
+### Q646: How to optimize React for low-end devices?
+
+Bundle size: tree-shake, lazy-load, split code. Runtime: use useMemo sparingly, avoid large list renders (virtualize), reduce JS execution, defer non-critical work.
+
+---
+
+### Q647: What is the relationship between React keys and component identity?
+
+Keys tell React which elements are the same across renders. Stable keys preserve component state and DOM position. Index keys break if list reorders.
+
+---
+
+### Q648: How to handle timezone-aware scheduling in React?
+
+Store times as UTC, display in user's timezone, handle daylight saving changes, and use libraries like date-fns with timezone support for reliable conversions.
+
+---
+
+### Q649: What's the cost of unnecessary prop passing in React?
+
+Each prop passed increases component re-check cost (shallow comparison). Minimize props via composition, extract child components, use context for distant data, or split into smaller components.
+
+---
+
+### Q650: How to validate API responses in React before rendering?
+
+Parse response with Zod/io-ts schema validation, catch type mismatches early, show error state if response invalid, and log violations for debugging API contract issues.
+
+---
+
+### Q651: What's the relationship between React event handlers and event bubbling?
+
+React uses synthetic events which bubble by default. Stop propagation with `e.stopPropagation()`. Understand that event delegation is handled at root level by React.
+
+---
+
+### Q652: How to implement a data-driven table component efficiently?
+
+Virtualize with react-window for large datasets, memoize rows, use stable cell renderers, implement sorting/filtering on backend for scalability, and lazy-load pagination.
+
+---
+
+### Q653: What are React's constraints for building real-time dashboards?
+
+Frequent updates can cause re-render thrashing. Use debounce/throttle for data updates, batch updates with Fiber scheduler, leverage Web Workers for heavy computations, and implement viewport-based rendering.
+
+---
+
+### Q654: How to handle dependent form field validations in React?
+
+Track field dependencies in state, trigger re-validation when dependent field changes, provide feedback linking fields, and use react-hook-form watch for reactive validation.
+
+---
+
+### Q655: What is the purpose of React's `defaultValue` vs `value`?
+
+`defaultValue` sets initial value for uncontrolled input; `value` drives controlled input. Mix them to transition from uncontrolled to controlled (anti-pattern in production).
+
+---
+
+### Q656: How to implement authentication refresh token flow in React?
+
+Store refresh token httpOnly cookie, use interceptor to auto-refresh on 401, retry original request, and implement token rotation for enhanced security.
+
+---
+
+### Q657: What are React's limitations for building AR/VR experiences?
+
+React isn't optimized for 3D rendering. Use Three.js with react-three-fiber for WebGL, but React's re-render overhead isn't ideal for high-fps 3D. Consider vanilla JS for graphics-heavy features.
+
+---
+
+### Q658: How to optimize bundle size when using multiple large libraries?
+
+Tree-shake unused exports, dynamically import heavy libraries (code-split), use lighter alternatives (preact, date-fns vs moment), remove polyfills for modern browsers, and analyze with bundle analyzer.
+
+---
+
+### Q659: What's the role of Composition API vs Options API thinking in React?
+
+React uses Composition (hooks compose logic). Think in terms of composing small functions not opposed to Options (Vue). Hooks force functional thinking but are more flexible.
+
+---
+
+### Q660: How to implement graceful cache invalidation in React Query?
+
+Use `queryClient.invalidateQueries()` to mark queries stale, `refetchOnMount`/`refetchOnReconnect` for fresh data, and strategic cache time (staleTime) to balance freshness vs redundant fetches.
+
+---
+
+### Q661: What is the cost of Context API at scale?
+
+Context re-renders all consumers when value changes. At scale (100+ deeply nested components), consider splitting contexts by concern or adopting Redux to mitigate unnecessary re-renders.
+
+---
+
+### Q662: How to handle race conditions in async React components?
+
+Ignore stale responses by tracking request ID, abort stale fetch requests with AbortController, or use React Query which handles race condition internally.
+
+---
+
+### Q663: What's the advantage of Storybook for React component development?
+
+Storybook provides isolated component development, interactive testing without app context, visual regression testing, and auto-documentation from stories.
+
+---
+
+### Q664: How to implement animated page transitions in React Router?
+
+Use Framer Motion with location state, coordinate animation timing with route changes, show loading state during navigation, and handle stale animations on unmount.
+
+---
+
+### Q665: What are React's best practices for handling files larger than Closure?
+
+Upload with resumable chunks (tus.io), show progress, retry failed chunks, validate hash on server, and clean up incomplete uploads server-side after timeout.
+
+---
+
+### Q666: How to implement a self-healing React component?
+
+Detect error state, retry logic with exponential backoff, reset state on recovery, and show user feedback about recovery attempt and result.
+
+---
+
+### Q667: What is the role of Webpack HMR in React development?
+
+Hot Module Replacement preserves component state during file changes, enabling fast iteration. Use react-refresh for modern HMR. Disable HMR in production.
+
+---
+
+### Q668: How to handle dynamic CSS variables with React state?
+
+Store color/size values in state, update CSS custom properties via `style.setProperty()` on root element, enable theme switching without full reload.
+
+---
+
+### Q669: What's the advantage of static site generation (SSG) in Next.js?
+
+SSG pre-renders pages at build time (fast, cacheable, CDN-friendly). Best for static content. ISR allows periodic re-generation without full rebuild.
+
+---
+
+### Q670: How to implement safe global state updates in React?
+
+Use Redux with reducers (pure functions), Redux Middleware for async, or Context with useReducer for small apps. Immutable updates prevent silent bugs.
+
+---
+
+### Q671: What are React's constraints for building collaborative UIs?
+
+Handle concurrent user edits (CRDTs), sync deltas efficiently (WebSocket), merge changes (operational transformation), show presence awareness, and gracefully handle connection loss.
+
+---
+
+### Q672: How to measure React app performance like a user perceives it?
+
+Track Core Web Vitals (LCP, FID/INP, CLS), use RUM (real user monitoring), monitor per route, and correlate with error rates and user feedback.
+
+---
+
+### Q673: What is the purpose of React's `key` in animation?
+
+Changing `key` forces React to unmount/remount component, retriggering mount animations. Use to trigger animation for same-type elements at different positions.
+
+---
+
+### Q674: How to implement a type-safe Redux-like hook for state management?
+
+Use useReducer with TypeScript for action types, provide dispatch function with type-safe action creators, or adopt Zustand/Jotai for simpler typed stores.
+
+---
+
+### Q675: What's the role of Web Components in React?
+
+React can wrap Web Components (custom elements), but integration is limited because React doesn't manage Web Component internals. React 19 improves interop with ref callbacks.
+
+---
+
+### Q676: How to optimize accessibility testing for React components?
+
+Use axe-core for automated checks, test keyboard navigation, verify focus management, use screen reader (NVDA, JAWS), and adopt WCAG 2.1 AA standards.
+
+---
+
+### Q677: What are React's best practices for handling large JSON payloads?
+
+Stream large responses (chunked transfer encoding), parse incrementally with streaming JSON parser, compress with gzip, and load data on demand (pagination).
+
+---
+
+### Q678: How to implement a resilient image loading strategy in React?
+
+Preload critical images, lazy-load below fold, show placeholder while loading, provide fallback on error, retry failed loads, and optimize with CDN.
+
+---
+
+### Q679: What is the cost of re-exporting in React modules?
+
+Re-exporting increases bundle size if not tree-shaken. Use ES6 named exports, avoid wildcard imports in bundler, and leverage bundler magic comments for optimization.
+
+---
+
+### Q680: How to handle timezone display consistency in React apps?
+
+Store all times as UTC ISO strings, display in user's timezone, use date-fns/Day.js with timezone plugin, and handle DST transitions gracefully.
+
+---
+
+### Q681: What's the advantage of snapshot testing in Jest?
+
+Snapshot testing captures component output, alerts on unexpected changes. Downside: false positives, requires manual review. Use sparingly for stable UIs, not for logic testing.
+
+---
+
+### Q682: How to implement a safe unsubscribe pattern in React effects?
+
+Return cleanup function from useEffect that unsubscribes. For Observables, call `.unsubscribe()`. For event listeners, call `.removeEventListener()`. Prevent memory leaks.
+
+---
+
+### Q683: What are React's constraints for building multiplayer games?
+
+React lacks low-latency update loop (render cycles too slow). Use game engines (Phaser, Babylon.js) or vanilla Canvas/WebGL. React can manage UI overlay only.
+
+---
+
+### Q684: How to optimize SVG rendering in React?
+
+Minimize SVG complexity, memoize `<svg>` component, use CSS transforms if animating, avoid rendering large SVGs in lists, and consider CSS or Canvas for very complex graphics.
+
+---
+
+### Q685: What is the role of `useImperativeHandle` hook?
+
+Expose imperative methods from child component to parent via ref. Use sparingly (most cases better solved with props). Example: focus DOM element or play animation from parent.
+
+---
+
+### Q686: How to implement state persistence with encryption in React?
+
+Encrypt sensitive state before storing in localStorage, decrypt on load, use libsodium or TweetNaCl.js for encryption, and handle key management securely.
+
+---
+
+### Q687: What's the relationship between React render count and performance?
+
+More renders = more CPU. Identify slow renders with Profiler (look for rerenders without prop changes), memoize expensive components, and optimize dependency arrays.
+
+---
+
+### Q688: How to handle version conflicts in React dependencies?
+
+Use npm shrinkwrap or lock file to pin versions, use peer dependencies carefully, test major version upgrades in separate branch, and use automated dependency updates (dependabot).
+
+---
+
+### Q689: What are React's best practices for handling deep links in SPAs?
+
+Preserve app state in URL (query params, path), restore state on navigation, use URL as single source of truth, and test deep link flows thoroughly.
+
+---
+
+### Q690: How to implement a resilient polling mechanism in React?
+
+Poll with exponential backoff on error, stop polling when connection lost, detect stale data with timestamps, and use WebSocket as fallback for real-time updates.
+
+---
+
+### Q691: What is the cost of useCallback in tight loops?
+
+`useCallback` adds memory overhead for each instance. Avoid in loops; move callbacks outside or use refs. For list items, memoize at item level, not inside loop.
+
+---
+
+### Q692: How to handle cross-origin requests safely in React?
+
+Use CORS headers on server, validate origin, avoid storing sensitive data in responses, implement CSRF tokens, and use httpOnly cookies for auth tokens.
+
+---
+
+### Q693: What's the advantage of TypeScript for React component APIs?
+
+Type interfaces auto-document props, catch errors at compile time, enable IDE autocomplete, and simplify refactoring with type safety across call sites.
+
+---
+
+### Q694: How to implement efficient search indexing in React?
+
+Index on backend (Elasticsearch, Meilisearch), send queries to server, cache results, show real-time suggestions as user types, and lazy-load results on scroll.
+
+---
+
+### Q695: What are React's constraints for building low-bandwidth apps?
+
+Minimize JS bundle, use web workers for processing, implement aggressive caching, send minimal JSON (no extra fields), and use service workers for offline fallback.
+
+---
+
+### Q696: How to implement a self-updating state in React without external polling?
+
+Use Server-Sent Events (SSE) for server pushes, WebSocket for bidirectional updates, or implement background sync (background-sync API) for reliable offline-first updates.
+
+---
+
+### Q697: What is the role of memo composition in React?
+
+Component composition with memo prevents re-renders of unchanged subtrees. Compose to isolate state changes, avoiding unnecessary memoization of larger trees.
+
+---
+
+### Q698: How to validate form state machine transitions in React?
+
+Define valid transitions as object map, validate before dispatching action, show error if transition invalid, and test all valid/invalid paths.
+
+---
+
+### Q699: What's the advantage of IndexedDB over localStorage for React apps?
+
+IndexedDB supports larger storage (unlimited vs 5-10MB), queries, indexes, and transactions. Use for app data, localStorage for simple key-value config.
+
+---
+
+### Q700: How to plan React app architecture for team scalability?
+
+Establish clear folder structure (feature-based), enforce code review standards, use shared component libraries, document patterns, enforce TypeScript, and automate testing/linting.
+
+---
+
+### Q701: What is the relationship between React reconciliation and object identity?
+
+React uses Object.is() for comparing objects. New object instances (even with same values) are considered different, triggering re-renders. Memoize objects/functions for stable references.
+
+---
+
+### Q702: How to implement a field-level permission system in React?
+
+Store user permissions in context, check permission before rendering field, disable/hide sensitive inputs, and validate on server (never trust client-side checks alone).
+
+---
+
+### Q703: What's the role of React.lazy in code splitting?
+
+React.lazy defers chunk loading until component renders. Reduces initial bundle, reveals chunks on demand. Pair with Suspense for loading state and error boundary for errors.
+
+---
+
+### Q704: How to handle concurrent requests with rate limiting in React?
+
+Use a request queue with worker pool, implement exponential backoff on 429, show user feedback about rate limit, and cache responses to minimize requests.
+
+---
+
+### Q705: What are React's best practices for handling date ranges?
+
+Use ISO format (YYYY-MM-DD), validate range (start <= end), localize display, handle edge cases (inclusive/exclusive), use date library (date-fns, Day.js) for operations.
+
+---
+
+### Q706: How to implement a component with prop-drilling avoidance via composition?
+
+Pass children as props (composition), use render props for configuration, or Context for deeply nested sharing. Choose based on reusability needs.
+
+---
+
+### Q707: What is the cost of function composition in React?
+
+Each higher-order function adds a wrapper component and memory overhead. Balance readability with performance; avoid excessive composition chains.
+
+---
+
+### Q708: How to optimize React app for Core Web Vitals (LCP, FID/INP, CLS)?
+
+LCP: preload critical resources, optimize images. FID/INP: reduce JS execution blocking the main thread. CLS: avoid content shifts, reserve space for dynamic content.
+
+---
+
+### Q709: What's the advantage of declarative state management over imperative?
+
+Declarative (describe desired state) is easier to reason about, test, and debug. React encourages declarative; use imperative sparingly for side effects.
+
+---
+
+### Q710: How to implement a fair priority queue for React renders?
+
+Use Fiber scheduler (React handles internally), or implement custom with task IDs and priorities. High-priority tasks (user input) skip ahead of low-priority (analytics).
+
+---
+
+### Q711: What are React's constraints for building progressive disclosure UIs?
+
+State explosion (many visibility flags). Solution: group related items in containers or use indexes to track expanded states. Memoize to prevent unnecessary renders.
+
+---
+
+### Q712: How to handle concurrent mutations in offline-first React apps?
+
+Track changes per entity, use vector clocks for causality, implement CRDTs for automatic merging, or implement manual conflict resolution UI.
+
+---
+
+### Q713: What is the role of `React.StrictMode` in development?
+
+StrictMode intentionally double-calls render/effects in dev to surface side effects. Helps find pure function violations. No impact in production.
+
+---
+
+### Q714: How to implement efficient filtering across large datasets in React?
+
+Filter on backend with query params, paginate results, memoize filter state, debounce input changes, and lazy-load filtered results on scroll.
+
+---
+
+### Q715: What's the advantage of zero-JS delivery for critical content in React?
+
+Render critical content server-side (Next.js SSR), skip JS for initial paint, hydrate interactivity separately. Improves First Contentful Paint.
+
+---
+
+### Q716: How to handle modal nesting in React?
+
+Maintain stack of modals, close from top, focus previous modal on close, manage z-index automatically, and prevent body scroll for all open modals.
+
+---
+
+### Q717: What are React's best practices for form auto-save?
+
+Save on field blur with debounce, optimistically update, show save status, handle conflicts, and clear pending changes after server ack.
+
+---
+
+### Q718: How to implement a resilient retry strategy for failed uploads?
+
+Chunk uploads, retry individual chunks on failure, validate chunk hash, resume from last successful chunk, and timeout after max retries.
+
+---
+
+### Q719: What is the cost of inline object literals in React?
+
+Every render creates new object (even if values same), breaking React.memo and useCallback. Move literals outside component or memoize with useMemo.
+
+---
+
+### Q720: How to optimize React app for search engine crawling?
+
+Use Server-Side Rendering (SSR), create sitemaps, add meta tags dynamically, implement Open Graph tags, and use Next.js for built-in SEO support.
+
+---
+
+### Q721: What's the role of React DevTools Profiler for optimization?
+
+Profiler shows render duration per component, re-render reasons, and render counts. Identify slow components and unnecessary re-renders for targeted optimization.
+
+---
+
+### Q722: How to implement a stateless authentication system in React?
+
+Use JWTs (stateless tokens) with expiry, refresh token rotation, store token in httpOnly cookie, and validate on server. Avoids session server-side state.
+
+---
+
+### Q723: What are React's constraints for handling subtitles/captions?
+
+Sync timing with video playback, handle different formats (VTT, SRT), position on screen, support multiple languages, and test with screen readers for accessibility.
+
+---
+
+### Q724: How to implement efficient text search highlighting in React?
+
+Split text by search term, wrap matches with highlight span, memoize search results, debounce search input, and handle special regex characters safely with escaping.
+
+---
+
+### Q725: What is the purpose of React's `displayName` for debugging?
+
+`displayName` labels components in DevTools and error messages. Custom displayName clarifies purpose, especially for HOCs and functional components without obvious names.
+
+---
+
+### Q726: How to handle internationalized URLs in React Router?
+
+Prefix routes with locale (/:lang/), validate locale on app load, provide locale switcher, redirect missing locale to default, preserve path on locale change.
+
+---
+
+### Q727: What's the advantage of viewport-relative sizing in React layouts?
+
+Use vw/vh/cqw units for responsive sizing, avoid pixel-dependent layouts, use CSS Grid with fr units, leverage CSS Subgrid for consistent layouts.
+
+---
+
+### Q728: How to implement a circular dependency-free component structure?
+
+Avoid child → parent imports, use Context to pass data down, abstract shared utilities to separate module, and use dependency injection for cross-cutting concerns.
+
+---
+
+### Q729: What are React's best practices for handling clipboard operations?
+
+Use modern Clipboard API, request permission, provide user confirmation for sensitive pastes, clear clipboard after sensitive data removal, and handle paste image data.
+
+---
+
+### Q730: How to optimize animation performance in React?
+
+Use CSS transforms/opacity (GPU-accelerated), avoid animating expensive properties (width, height), use requestAnimationFrame for custom animations, and debounce scroll animations.
+
+---
+
+### Q731: What is the cost of conditional imports in React?
+
+Dynamic imports (import()) defer loading but add runtime overhead. Use for uncommon features; avoid for common ones. Tree-shaking works best with static imports.
+
+---
+
+### Q732: How to implement a fault-tolerant GraphQL client in React?
+
+Implement retry logic, batch queries for efficiency, cache results, handle partial errors, and fallback to stale cache on failure.
+
+---
+
+### Q733: What's the role of React Profiler API programmatically?
+
+Use Profiler component to measure subtree render times, log metrics, and trigger actions based on performance thresholds (e.g., alert slow renders).
+
+---
+
+### Q734: How to handle user interactions before hydration in React apps?
+
+Queue events during hydration, replay after hydration complete, or disable interactions until hydration done. Next.js handles this automatically with suppressHydrationWarning.
+
+---
+
+### Q735: What are React's constraints for building data visualization dashboards?
+
+Large datasets cause re-render thrashing. Use Canvas/SVG rendering libraries (Recharts, D3 with React), virtualize large charts, and defer non-visible updates.
+
+---
+
+### Q736: How to implement a debounced search with React Query?
+
+Use `queryKey` with search term, debounce term change, React Query deduplicates requests, and caches previous searches for instant recall.
+
+---
+
+### Q737: What is the relationship between React hooks and closure?
+
+Hooks rely on closures to access component state. Dependency array prevents stale closures by re-creating function when dependencies change.
+
+---
+
+### Q738: How to validate complex interdependent form fields in React?
+
+Maintain validation schema with rules and dependencies, validate on blur and submit, show field-and-dependency-specific errors, use yup/zod for declarative validation.
+
+---
+
+### Q739: What's the advantage of SWR (Stale-While-Revalidate) pattern for React?
+
+SWR serves cached data immediately, revalidates in background, merges new data without flicker. Improves perceived performance and UX for data fetching.
+
+---
+
+### Q740: How to implement a component library with CSS isolation?
+
+Use CSS Modules, Shadow DOM, or CSS-in-JS libraries. Provide clear variants (props), document with Storybook, version separately, and publish to npm.
+
+---
+
+### Q741: What are React's best practices for handling error messages?
+
+Be user-friendly (no stack traces), suggest resolution, log full errors server-side, implement error logging service, and categorize errors (4xx, 5xx) for appropriate messaging.
+
+---
+
+### Q742: How to optimize React app for slow network conditions?
+
+Minify, compress, code-split, lazy-load images, use Service Workers for offline fallback, and test with throttled network (Chrome DevTools).
+
+---
+
+### Q743: What is the cost of `console.log` in React production?
+
+Logs reduce performance if high volume. Use environment checks (if (import.meta.env.DEV)) to remove logs in production, or use debug library for conditional logging.
+
+---
+
+### Q744: How to implement a resilient subscription-based UI in React?
+
+Subscribe in useEffect, unsubscribe in cleanup, handle subscription errors, use React Query or SWR for automatic management, and implement exponential backoff on connection loss.
+
+---
+
+### Q745: What's the role of React Suspense List for UX?
+
+SuspenseList coordinates reveal order of multiple Suspense boundaries. Revealorder prop (together, forwards, backwards) controls loading sequence for better UX.
+
+---
+
+### Q746: How to handle form recovery after page reload in React?
+
+Auto-save form state to localStorage, restore on mount, show unsaved changes warning, and clear after server confirms save.
+
+---
+
+### Q747: What are React's constraints for building high-frequency trading UIs?
+
+React's re-render latency inadequate for subsecond updates. Use WebSockets for real-time data, Web Workers for heavy computation, and separate graphics rendering from React.
+
+---
+
+### Q748: How to implement a unified error tracking system in React?
+
+Use error boundary with Sentry integration, track errors with custom metadata, deduplicate similar errors, and create dashboards for error trends.
+
+---
+
+### Q749: What is the purpose of React's `key` in fragments?
+
+React.Fragment doesn't support `key` prop (only in lists via map). Use `<>...</>` shorthand; if you need keys, use `<React.Fragment key={id}>`.
+
+---
+
+### Q750: How to plan React component dependency graph for modularity?
+
+Map component dependencies, minimize circular refs, group related components, use Context for cross-cutting concerns, and publish shared components separately.
+
+---
+
+### Q751: What's the relationship between React render props and function-as-child pattern?
+
+Both pass render logic via props (function-as-child is a type of render prop). Functional approach, preferred over HOCs. Enable complex data flow without nested components.
+
+---
+
+### Q752: How to implement field masking for inputs in React?
+
+Use libraries (react-input-mask, cleave.js) or implement custom with onChange handler tracking, validate user input against mask pattern, and preserve cursor position.
+
+---
+
+### Q753: What are React's constraints for building accessibility-first designs?
+
+Plan for keyboard navigation, screen readers, contrast, focus management upfront. Testing requires actual screen readers (not just automated tools) for comprehensive coverage.
+
+---
+
+### Q754: How to handle state reset across different React views?
+
+Track view/route in state, provide reset button with context, or integrate with router to reset on navigation. Use custom hook for reusable reset logic.
+
+---
+
+### Q755: What is the cost of large switch statements in React render?
+
+Switch statements for rendering are readable but not optimized. Extract to render functions or separate components for large switches. No significant perf difference if well-structured.
+
+---
+
+### Q756: How to implement a real-time notification badge system in React?
+
+Maintain unread count in state, increment on new notification, use Context for app-wide access, show badge with count, clear on view, and persist preference to server.
+
+---
+
+### Q757: What's the advantage of webpack Module Federation for React microfrontends?
+
+Share code across independently deployable apps, load remote components dynamically, version libraries independently, and coordinate at consumption time—enables true modular architecture.
+
+---
+
+### Q758: How to validate user input without form libraries in React?
+
+Maintain validation state per field, validate on blur/change, show field-specific errors, provide clear feedback. Consider libraries like React Hook Form for complex forms.
+
+---
+
+### Q759: What are React's best practices for handling global keyboard shortcuts?
+
+Create context/hook for registering shortcuts, prevent propagation to avoid conflicts, document all shortcuts, and allow user customization if possible.
+
+---
+
+### Q760: How to optimize React app for first input delay (FID)?
+
+Split JS chunks, defer non-critical scripts, use requestIdleCallback for background work, minimize main thread work, and keep event handlers fast (< 100ms).
+
+---
+
+### Q761: What is the role of React's `useLayoutEffect` for DOM synchronization?
+
+`useLayoutEffect` synchronously updates DOM before browser paint. Use for layout measurements, scroll position restoration, or DOM mutations requiring immediate effect.
+
+---
+
+### Q762: How to implement a search-as-you-type feature with debouncing?
+
+Debounce search input with useRef/setTimeout, trigger fetch on term change, cache results, show results in dropdown, and highlight matches.
+
+---
+
+### Q763: What's the cost of unnecessary Fragment wrapping in React?
+
+Fragments are free (not DOM nodes), but returning unnecessary Fragment components adds nesting. Use sparingly; avoid if not needed (except when returning multiple elements from map).
+
+---
+
+### Q764: How to handle screen reader announcements for dynamic form errors?
+
+Use aria-live="polite" on error container, update text content (screen reader announces), use aria-invalid="true" on fields, and link aria-describedby to error messages.
+
+---
+
+### Q765: What are React's constraints for building low-latency multiplayer experiences?
+
+React's batched updates introduce latency. Use UDP-based protocols (not TCP/HTTP), implement client-side prediction, server reconciliation, and consider native/game engines for critical features.
+
+---
+
+### Q766: How to implement efficient state synchronization across browser tabs?
+
+Use localStorage/sessionStorage events, BroadcastChannel API for simpler cases, or service worker message passing. Avoid race conditions with timestamps or IDs.
+
+---
+
+### Q767: What is the purpose of React's `propTypes` for runtime validation?
+
+propTypes validate props at runtime in development (removed in production builds). Catches type mismatches early. TypeScript replaces this in modern projects for compile-time safety.
+
+---
+
+### Q768: How to optimize bundle size of monorepo packages in React?
+
+Tree-shake unused exports, share common dependencies via Yarn workspaces, use dynamic imports for rarely-used packages, and analyze each package separately.
+
+---
+
+### Q769: What's the advantage of Atomic Design methodology for React components?
+
+Atomic Design (atoms → molecules → organisms) creates a scalable, reusable component library. Clear hierarchy makes testing, maintenance, and sharing components easier.
+
+---
+
+### Q770: How to implement a fair rate-limiting system for API calls in React?
+
+Track request count with timestamps, reject if limit exceeded, implement exponential backoff, show user feedback about limits, and respect rate-limit headers from server.
+
+---
+
+### Q771: What are React's best practices for handling user preferences?
+
+Store in localStorage for sync non-critical prefs, Context for runtime access, provide UI to change, sync with server on next request, and respect system preferences (dark mode, etc.).
+
+---
+
+### Q772: How to handle cross-cutting concerns in React without prop drilling?
+
+Use Context for data/functions, custom hooks for shared logic, middleware for side effects, and higher-order functions for wrapping behavior.
+
+---
+
+### Q773: What is the cost of CSS-in-JS libraries for React?
+
+Runtime overhead (parsing, injecting), larger bundle size. Mitigate with babel plugins (extract CSS), use static styling where possible, and consider CSS Modules as alternative.
+
+---
+
+### Q774: How to implement a role-based access control (RBAC) system in React?
+
+Define roles with permissions, check permissions in Context, render components conditionally, disable/hide restricted features, and validate on server (security).
+
+---
+
+### Q775: What's the role of React's `useCallback` in optimization?
+
+`useCallback` memoizes function reference, preventing unnecessary child re-renders when function passed as prop. Use when function passed to optimized (memo'd) children.
+
+---
+
+### Q776: How to optimize React component re-renders with Profiler?
+
+Use React DevTools Profiler to identify slow components, check re-render reasons, apply memo/useMemo/useCallback as needed, and measure improvements.
+
+---
+
+### Q777: What are React's constraints for building progressive web apps (PWAs)?
+
+Service worker management, offline support, manifest setup, installation prompts. Use Next.js PWA plugin or workbox for simplified integration.
+
+---
+
+### Q778: How to implement data-driven feature flags in React?
+
+Fetch flags from server on app boot, store in Context, evaluate conditionally, update without restart via /actuator/refresh-like endpoint, and log feature usage.
+
+---
+
+### Q779: What is the relationship between React reconciliation and list order?
+
+React matches elements by key (if provided) or position. Reordering without stable keys breaks state. Keys maintain identity, enabling correct state preservation.
+
+---
+
+### Q780: How to handle timezone-aware calendar components in React?
+
+Store dates as UTC, display in user timezone, handle DST transitions, use date-fns/Day.js timezone plugin, and provide timezone selector if needed.
+
+---
+
+### Q781: What's the advantage of useCallback for event handlers?
+
+`useCallback` memoizes handler, preventing new function on each render (breaks React.memo). Essential for handlers passed to memo'd children in lists or dynamic components.
+
+---
+
+### Q782: How to implement resilient API error recovery with React Query?
+
+Use retry settings, implement backoff, handle specific error types with custom logic, use error boundaries, and show user-friendly error messages.
+
+---
+
+### Q783: What are React's best practices for managing form submission state?
+
+Track loading/error/success states, disable submit button during submission, show feedback messages, handle server validation errors, and provide user confirmation for destructive actions.
+
+---
+
+### Q784: How to optimize React Lazy loading with preloading strategies?
+
+Prefetch components on hover/route prediction, preload critical chunks in background, use requestIdleCallback, and measure impact on performance budgets.
+
+---
+
+### Q785: What is the cost of `useReducer` vs `useState`?
+
+`useReducer` adds complexity (dispatch, action types) but scales better for complex state. `useState` simpler for independent state. Choose based on state complexity.
+
+---
+
+### Q786: How to implement a fair user-facing rate limiting UI in React?
+
+Show remaining requests/quota, countdown timer until reset, suggest upgrade, provide batch operations, and cache results to minimize requests.
+
+---
+
+### Q787: What's the role of React's strict equality (===) in optimization?
+
+React uses === for comparing values (primitives OK, objects/arrays need memoization). Understand reference equality to avoid unnecessary re-renders.
+
+---
+
+### Q788: How to handle animation cleanup in React when component unmounts?
+
+Cancel in-flight animations in useEffect cleanup, cancel timers/timeouts, use AbortController for fetch, and test unmount cleanup thoroughly.
+
+---
+
+### Q789: What are React's constraints for building voice-activated interfaces?
+
+Use Web Speech API, handle browser support differences, provide text fallback, ensure keyboard navigation works, and test with actual voice input for edge cases.
+
+---
+
+### Q790: How to optimize React app with intelligent code splitting?
+
+Split by route, feature flags, or user roles. Preload critical chunks, prefetch likely routes, and measure impact on metrics (bundle size, TTI, LCP).
+
+---
+
+### Q791: What is the purpose of React's `key` for non-list components?
+
+`key` can reset component state by causing unmount/remount. Use to trigger re-initialization (animations, data fetching) when key changes.
+
+---
+
+### Q792: How to implement a zero-configuration state management hook in React?
+
+Use Zustand or Jotai for atomic, minimal state management. No Redux boilerplate; hooks directly access/update state with simple API.
+
+---
+
+### Q793: What's the advantage of semantic HTML over divitis in React?
+
+Semantic tags (button, nav, menu) improve accessibility, SEO, and semantics. Screen readers understand structure. Avoid `<div>` soup; use proper elements when possible.
+
+---
+
+### Q794: How to handle cross-domain data loading in React safely?
+
+Use CORS headers on server, validate origins, implement CSP headers, avoid storing secrets, use httpOnly cookies for auth, and validate response data types.
+
+---
+
+### Q795: What are React's best practices for handling race conditions in fetching?
+
+Use AbortController, ignore stale responses, race condition detection (request ID), or React Query which handles internally. Test with slow networks simulated.
+
+---
+
+### Q796: How to implement a lazy evaluation pattern for expensive computations in React?
+
+Use useMemo with dependencies, defer computation until needed, cache results, use Web Workers for CPU-intensive tasks, and avoid recomputation of unchanged data.
+
+---
+
+### Q797: What is the cost of inline event handlers in React?
+
+Inline handlers create new function every render, potentially breaking React.memo. Move outside component or use useCallback to memoize for optimization.
+
+---
+
+### Q798: How to plan gradual migration from Class to Function Components in React?
+
+Migrate component by component, cover with tests first, use Hooks for equivalent Class features, and handle refs/getDerivedStateFromProps carefully.
+
+---
+
+### Q799: What's the role of React's error boundary for async errors?
+
+Error boundaries catch synchronous render errors only. Async errors from effects require try/catch or error state. Combine both for comprehensive error handling.
+
+---
+
+### Q800: How to optimize React app for long-term maintenance and team handoff?
+
+Document patterns and decisions, enforce code style (ESLint), use TypeScript, create runbooks for common tasks, maintain changelog, and design for extensibility.
+
+---
+
+### Q801: What's the relationship between React component identity and key prop?
+
+Components with different keys mount/unmount separately, resetting state. Use stable keys from data, not index (breaks on reorder). Key equality enables state preservation.
+
+---
+
+### Q802: How to implement a fair component sharing system in monorepo React?
+
+Publish shared components to npm workspace, version independently, document per component, maintain backwards compatibility, and test across consuming apps.
+
+---
+
+### Q803: What are React's constraints for building inclusive typography systems?
+
+Support dynamic sizing based on user preferences, respect prefers-reduced-motion, ensure readable font sizes (not too small), provide font loading strategy to avoid FOIT/FOUT, and test with screen readers.
+
+---
+
+### Q804: How to handle complex form state validation with schemas in React?
+
+Use yup/zod/joi for schema validation, validate on blur/submit, show field and cross-field errors, provide clear feedback, and implement custom validators for domain logic.
+
+---
+
+### Q805: What is the cost of repeated object creation in React renders?
+
+New objects/arrays break === equality even if values same, causing re-renders. Memoize objects with useMemo or move outside component to prevent recreation.
+
+---
+
+### Q806: How to implement efficient text truncation with tooltips in React?
+
+Use CSS `text-overflow: ellipsis`, detect overflow with ref measurement, show tooltip on hover, and test with long text, RTL, and dynamic content.
+
+---
+
+### Q807: What's the advantage of viewport observations for lazy loading?
+
+Intersection Observer API detects element visibility efficiently, avoiding scroll event thrashing. Ideal for lazy-loading images, infinite scroll, and performance tracking.
+
+---
+
+### Q808: How to optimize React app for users with slow devices?
+
+Minimize JS, defer non-critical code, use images optimally (responsive, compressed), reduce animations, implement skeleton screens, and test on actual slow devices (Chrome DevTools handicap).
+
+---
+
+### Q809: What are React's best practices for managing side effects in order?
+
+Compose multiple useEffect hooks for clarity, each handles single concern, dependencies control execution timing, use cleanup functions for teardown, and think in terms of synchronization not lifecycle.
+
+---
+
+### Q810: How to implement a resilient WebSocket connection in React?
+
+Implement reconnect logic with exponential backoff, detect connection loss, queue messages during disconnect, sync state on reconnect, and show connection status.
+
+---
+
+### Q811: What is the purpose of React's `useMemo` dependencies array?
+
+Dependencies control when memoized value is recalculated. Missing dependency causes stale values; extra dependencies cause unnecessary recalculation. Linter helps identify correct dependencies.
+
+---
+
+### Q812: How to handle image preloading strategies in React?
+
+Preload critical images in head, prefetch likely images, use cdn.img tag with sizes, implement blur-up loading, and lazy-load below-fold images with Intersection Observer.
+
+---
+
+### Q813: What's the cost of Context provider re-renders in React?
+
+Context value changes trigger all consumers to re-render. Mitigate by: memoizing value, splitting contexts by concern, or using atom-based libraries (Jotai, Zustand).
+
+---
+
+### Q814: How to implement a fair multi-select component in React?
+
+Support keyboard navigation (arrow keys, space), show selected count, provide clear/select all buttons, handle large lists with virtualization, and test accessibility.
+
+---
+
+### Q815: What are React's constraints for building mobile-first responsive interfaces?
+
+Consider touch targets (44px minimum), handle tap vs hover, avoid scroll locks, optimize for smaller viewports first, and test on actual devices (not just browser).
+
+---
+
+### Q816: How to optimize React app load time for poor network (3G)?
+
+Code-split aggressively, preload critical chunks only, compress assets, serve from CDN, implement service worker for offline, and test with 3G Fast throttle.
+
+---
+
+### Q817: What is the relationship between React's virtual DOM and browser DOM?
+
+Virtual DOM is in-memory representation. React reconciles changes, updates browser DOM minimally. Minimization improves performance significantly vs direct DOM manipulation.
+
+---
+
+### Q818: How to implement a resilient data export feature in React?
+
+Generate in background (Web Worker), show progress, handle large datasets in chunks, provide stream download, and validate exported data format.
+
+---
+
+### Q819: What's the advantage of imperative animation libraries for React?
+
+Framer Motion, React Spring enable complex orchestrated animations, keyframe coordination, and gesture responses. Cleaner than managing CSS animations manually.
+
+---
+
+### Q820: How to handle sensitive form data security in React?
+
+Never log sensitive values, clear data on unmount, use autoComplete="off", avoid copying to clipboard automatically, validate server-side, and use HTTPS only.
+
+---
+
+### Q821: What are React's best practices for handling third-party script injection?
+
+Load scripts asynchronously, avoid blocking render, use window global cautiously, integrate via Context for app-wide access, and verify script integrity (SRI).
+
+---
+
+### Q822: How to optimize React app CSS-in-JS with static extraction?
+
+Use babel plugins (styled-components, emotion) to extract critical CSS, reduce runtime overhead, improve performance, and enable static optimization during build.
+
+---
+
+### Q823: What is the cost of `Array.map` re-creating components?
+
+Each map call re-creates component instances if function defined inline. Move function outside or memoize for optimization. Use stable keys to preserve state.
+
+---
+
+### Q824: How to implement a fair carousel/slider component in React?
+
+Support keyboard navigation (arrow keys), show active indicator, handle swipe on mobile, lazy-load slides, implement autoplay with pause on hover, and test with screen readers.
+
+---
+
+### Q825: What's the role of React's `useRef` for imperative operations?
+
+`useRef` provides direct DOM access for imperative operations: focus, text selection, triggering animations. Use sparingly; prefer declarative props when possible.
+
+---
+
+### Q826: How to handle concurrent rendering in React applications?
+
+React 18+ automatically schedules work based on priority. Use `useTransition` for deferrable updates, `useDeferredValue` for non-urgent data. Don't force concurrency; let React manage.
+
+---
+
+### Q827: What are React's constraints for implementing real-time audio/video features?
+
+Use WebRTC for P2P, MediaStream API for capturing, handle permissions carefully, provide fallbacks, and ensure audio/video codecs compatibility across browsers.
+
+---
+
+### Q828: How to optimize React app for visual regression testing?
+
+Use Percy/Chromatic for visual snapshots, test across breakpoints, handle dynamic content (disable animations), and establish diff thresholds to avoid noise.
+
+---
+
+### Q829: What is the purpose of React's `suppressHydrationWarning` prop?
+
+Suppress warnings during server-render mismatch (e.g., timestamp server renders differently than client). Use sparingly; fix root cause when possible (e.g., useEffect for client-only values).
+
+---
+
+### Q830: How to implement a lazy-evaluated selector in Redux-like state?
+
+Use `reselect` for memoization, compute derived state on demand, cache results, and avoid recreation on unchanged inputs for performance.
+
+---
+
+### Q831: What's the advantage of semantic versioning for React packages?
+
+MAJOR.MINOR.PATCH: breaking changes require major version, backward-compatible features use minor, fixes use patch. Enables dependency management confidence.
+
+---
+
+### Q832: How to handle animation frame synchronization in React?
+
+Use `requestAnimationFrame` for smooth animations, coordinate multiple animations with shared frame, and cleanup on unmount to prevent memory leaks.
+
+---
+
+### Q833: What are React's best practices for handling form autofill?
+
+Ensure proper input name/autocomplete attributes, handle autofill lag with onAutoFill event, validate after autofill, and test autofill scenarios.
+
+---
+
+### Q834: How to optimize React app for CPU-constrained environments?
+
+Reduce complexity, use CSS transforms, defer non-critical work (requestIdleCallback), profile to identify bottlenecks, and consider lower-interactive alternatives (static HTML).
+
+---
+
+### Q835: What is the cost of useCallback with many dependencies?
+
+Each dependency change re-creates callback. Too many deps defeats purpose. Sign of component doing too much; consider splitting into smaller specialized components.
+
+---
+
+### Q836: How to implement a resilient clipboard paste feature in React?
+
+Use Clipboard API, handle paste image/text, validate pasted data, show feedback, request permission if needed, and provide fallback for unsupported browsers.
+
+---
+
+### Q837: What's the role of React's `forwardRef` for accessing child DOMs?
+
+`forwardRef` allows parent to access child DOM nodes via ref. Use for imperative operations (focus, scroll). Typically needed for library (input, video) or 3rd-party components.
+
+---
+
+### Q838: How to handle component state restoration after navigation in React Router?
+
+Store state in URL query params, restore from URL on mount, use Context for temporary state, or implement custom store synchronized with URL.
+
+---
+
+### Q839: What are React's constraints for building data-heavy dashboards?
+
+Render performance is critical. Use Canvas/SVG rendering, virtualize large lists, defer non-visible data loading, implement loading states, and profile aggressively.
+
+---
+
+### Q840: How to optimize React bundle for tree-shaking?
+
+Use ES6 exports, avoid default exports (less shaking), mark side-effect-free modules with sideEffects: false in package.json, and analyze bundle with webpack-bundle-analyzer.
+
+---
+
+### Q841: What is the purpose of React's `<Suspense>` boundary?
+
+Suspense catches promises thrown by components, shows fallback UI while loading, enables code splitting and data fetching coordination, and simplifies loading state management.
+
+---
+
+### Q842: How to implement fair notification stacking in React?
+
+Maintain stack of notifications, position on screen, auto-dismiss with timeout, allow manual dismiss, and handle overflow (max visible count) with queue.
+
+---
+
+### Q843: What's the advantage of context-based animation syncing in React?
+
+Synchronize animations across components via Context, coordinate timing, avoid prop drilling animation states, and enable global animation toggles for preference.
+
+---
+
+### Q844: How to handle secure session storage in React SPAs?
+
+Use httpOnly cookies (secure, no JS access), avoid localStorage for sensitive tokens, implement token refresh on 401, and handle logout via server endpoint.
+
+---
+
+### Q845: What are React's best practices for responsive image loading?
+
+Use srcset with media descriptors, picturepic for different image sources, lazy-load off-screen images, optimize with CDN, and test on various screen sizes.
+
+---
+
+### Q846: How to optimize React app for accessibility-first development?
+
+Start with semantic HTML, test with keyboard/screen reader, use ARIA when needed, follow WCAG 2.1 AA, and include accessibility in code reviews.
+
+---
+
+### Q847: What is the cost of mutable state in React?
+
+Mutable state bypasses React's reactivity, preventing re-renders. Always use setState/useState to trigger updates. Use Immer if mutations feel natural.
+
+---
+
+### Q848: How to implement a resilient long-polling mechanism in React?
+
+Poll incrementally, backoff on error, detect stale data, show connection status, and switch to WebSocket if available for efficiency.
+
+---
+
+### Q849: What's the role of React's `useTransition` for async state updates?
+
+`useTransition` marks updates as non-urgent, React deprioritizes, keeps current UI responsive. Show Suspense fallback while transitioning, improving UX.
+
+---
+
+### Q850: How to plan React component testing strategy for large projects?
+
+Test behavior (not implementation), unit tests for logic, integration tests for components, E2E for user flows. Maintain test coverage (>80%), and automate in CI.
+
+---
+
+### Q851: What's the relationship between React's scheduler and task priority?
+
+React's Fiber scheduler prioritizes work: user input (high), network response (medium), non-urgent (low). `useTransition` and `useDeferredValue` control priority for better UX.
+
+---
+
+### Q852: How to implement graceful degradation for unsupported features in React?
+
+Check feature availability (navigator, window APIs), provide fallback UI, inform users of limitations, and test sans-feature scenarios thoroughly.
+
+---
+
+### Q853: What are React's constraints for building real-time multiplayer games?
+
+React's render cycle too slow for game loops. Use separate game engine (Babylon.js, Three.js), React manages UI only. Separate graphics from logic.
+
+---
+
+### Q854: How to optimize React app for internationalized content delivery?
+
+Lazy-load locale bundles, cache translations, CDN per region, handle RTL layouts, test with multiple languages, and provide language selector prominently.
+
+---
+
+### Q855: What is the cost of prop object creation in React render?
+
+Creating new object literal in props every render breaks React.memo. Move outside component or useMemo. Impacts performance in lists with memoized items.
+
+---
+
+### Q856: How to implement a fair comment/discussion thread component in React?
+
+Lazy-load comments, pagination, nested replies (limit depth), reply-to functionality, editing/deletion with optimistic updates, and handle notifications.
+
+---
+
+### Q857: What's the advantage of React Profiler for identifying bottlenecks?
+
+Profiler shows per-component render times, re-render reasons, flame graph visualization. Identify slow components and optimize with data-driven approach.
+
+---
+
+### Q858: How to handle complex state machines in React?
+
+Use xstate or similar state machine library, define transitions explicitly, implement guards (conditional transitions), and test state flows comprehensively.
+
+---
+
+### Q859: What are React's best practices for handling geolocation data?
+
+Request permission, show loading state, handle denial gracefully, use latitude/longitude accurately, center map properly, and cache location (respect user privacy).
+
+---
+
+### Q860: How to optimize React app for progressive image loading?
+
+Load low-res placeholder first, progressive JPEG, blur-up effect with CSS, replace with high-res on load, and handle slow network gracefully.
+
+---
+
+### Q861: What is the purpose of React's `useDebugValue` hook?
+
+`useDebugValue` shows custom hook state in DevTools. Help debugging by formatting complex state for readability. Example: format state for easier inspection.
+
+---
+
+### Q862: How to implement resilient user session management in React?
+
+Check session on app boot, refresh on 401, handle logout via server, show session expiry warning, and clear client state on logout.
+
+---
+
+### Q863: What's the cost of conditional rendering all branches in React?
+
+Rendering conditional branches creates components even if hidden. Hide with CSS (display: none) for kept state, conditional render for fresh state. Choose based on use case.
+
+---
+
+### Q864: How to handle complex form submission flows in React?
+
+Track submission state (idle, submitting, success, error), validate before submit, handle server errors, show loading/success/error states, and provide user feedback.
+
+---
+
+### Q865: What are React's constraints for building searchable, filterable lists?
+
+Large lists need virtualization, debounced filtering, pagination, or infinite scroll. Implement server-side for scalability, client-side only for small datasets.
+
+---
+
+### Q866: How to optimize React app for Core Web Vitals (LCP, FID/INP, CLS)?
+
+LCP: preload critical resources, optimize images. FID/INP: reduce JS execution, defer non-critical work. CLS: reserve space for ads/images, avoid unsized content.
+
+---
+
+### Q867: What is the relationship between React suspense and error boundaries?
+
+Suspense catches promises (loading), Error Boundary catches errors. Combine both for complete error/loading handling. Suspense doesn't catch async errors.
+
+---
+
+### Q868: How to implement a resilient backup/restore feature in React?
+
+Back up state periodically, compress and encrypt, restore with integrity check, show progress, and handle version mismatches during restore.
+
+---
+
+### Q869: What's the advantage of Atomic Components in design systems?
+
+Breaking design into atoms (buttons, inputs) enables:
+- Reusability across apps
+- Consistency
+- Isolation for testing
+- Minimal dependencies
+- Clear composition rules
+
+---
+
+### Q870: How to handle cross-browser compatibility for modern APIs in React?
+
+Check feature availability, provide polyfills/fallbacks, test on target browsers, use feature detection (not user agent), and transpile for older browsers.
+
+---
+
+### Q871: What are React's best practices for managing loading states?
+
+Explicit state for each async operation, show appropriate UI (loading, success, error), provide user feedback, and avoid cascading spinners (group related items).
+
+---
+
+### Q872: How to optimize React app database queries on client?
+
+Minimize queries (batch), cache responses, implement pagination, lazy-load data, denormalize strategically, and delegate complex queries to server (GraphQL, API).
+
+---
+
+### Q873: What is the cost of inline callback functions in React?
+
+Inline callbacks create new function instance every render, breaking React.memo and useCallback. Move outside or use useCallback for optimization.
+
+---
+
+### Q874: How to implement a fair data table with sorting/filtering in React?
+
+Support multi-column sort, advanced filter UI, export functionality, pagination, lazy-load rows, and preserve sort/filter on page reload.
+
+---
+
+### Q875: What's the role of React's `startTransition` API for urgent updates?
+
+`startTransition` manually mark updates as non-urgent, same effect as `useTransition` but outside components. Useful in event handlers for async operations.
+
+---
+
+### Q876: How to handle animation cleanup for unmounting React components?
+
+Cancel animations in useEffect cleanup, clear timeouts/intervals, use AbortController for fetch requests during animations, and prevent state updates on unmounted components.
+
+---
+
+### Q877: What are React's constraints for building real-time collaboration features?
+
+Handle concurrent edits (OT/CRDT), sync efficiently, merge changes from multiple users, show presence awareness, and handle connection loss gracefully.
+
+---
+
+### Q878: How to optimize React Performance with dynamic imports?
+
+Use dynamic() with Next.js, React.lazy() for code-split, prefetch likely chunks, measure impact on time-to-interactive, and avoid splitting too many chunks.
+
+---
+
+### Q879: What is the purpose of React Query's `staleTime` and `cacheTime`?
+
+`staleTime`: how long data considered fresh before refetch. `cacheTime`: how long to keep unused data before garbage collection. Balance freshness and performance.
+
+---
+
+### Q880: How to implement a fair search with AI/ML suggestions in React?
+
+Use ML service for suggestions, cache/dedupe requests, rank suggestions by relevance, show confidence scores, allow feedback for ranking improvement.
+
+---
+
+### Q881: What's the advantage of Component Composition over Class Inheritance?
+
+Composition (building with smaller components) is more flexible, easier to test, avoids deep inheritance chains, and aligns with React's design philosophy.
+
+---
+
+### Q882: How to handle user input sanitization in React?
+
+Never trust user input, sanitize with DOMPurify for HTML, escape in event handlers, validate on server (critical), use parameterized queries server-side.
+
+---
+
+### Q883: What are React's best practices for managing deeply-nested state?
+
+Normalize state structure (flat), use reducers for complex updates, leverage Immer for mutable-like syntax, split into multiple hooks/contexts per concern.
+
+---
+
+### Q884: How to optimize React app for low JavaScript execution budgets?
+
+Prioritize critical rendering path, defer non-critical JS, use service workers for caching, minimize bundle, and test with DevTools throttling.
+
+---
+
+### Q885: What is the cost of useCallback with no dependencies?
+
+`useCallback` with [] creates function once, always stable reference. Useful but not necessary if function not passed to children (no memo benefit).
+
+---
+
+### Q886: How to implement a resilient file storage system in React?
+
+Chunk uploads for reliability, validate server-side, implement resumable uploads, backup to cloud, show storage usage, and handle quotas gracefully.
+
+---
+
+### Q887: What's the role of React's `useId` hook?
+
+`useId` generates unique IDs for form elements, avoiding conflicts between components. Useful for accessibility (aria-labelledby), form association, and server rendering.
+
+---
+
+### Q888: How to handle complex navigation state in React Router?
+
+Use location state for transitional data, param for persistent state, query string for filtering, preserve state on back navigation with history.
+
+---
+
+### Q889: What are React's constraints for building data-intensive analytics dashboards?
+
+Performance critical. Use Canvas/SVG libraries, virtualize large tables, defer non-visible data, implement sampling for large datasets, and profile aggressively.
+
+---
+
+### Q890: How to optimize React app for progressive disclosure UIs?
+
+Use expand/collapse components, lazy-load detailed content, maintain expand state per item, and consider performance of large expanded sections.
+
+---
+
+### Q891: What is the relationship between React Fiber and async rendering?
+
+Fiber enables incremental rendering, pausing between renders to allow browser to handle input/animation. Fiber scheduler manages priority automatically.
+
+---
+
+### Q892: How to implement a resilient plugin/extension system in React?
+
+Define plugin interface, lazy-load plugins dynamically, isolate plugin errors with error boundary, provide plugin hooks for lifecycle events.
+
+---
+
+### Q893: What's the advantage of React Hooks for logic reuse over render props/HOCs?
+
+Hooks are simpler to write and read, avoid nesting/prop drilling, compose naturally, and integrate with other hooks without special handling.
+
+---
+
+### Q894: How to handle complex accessibility scenarios in React apps?
+
+Test with actual screen readers, keyboard navigation throughout, ARIA when semantic HTML insufficient, focus management on dynamic updates, and user feedback loops.
+
+---
+
+### Q895: What are React's best practices for versioning component APIs?
+
+Document breaking changes, provide migration guides, deprecate gradually, maintain old versions for time, and use semantic versioning for clarity.
+
+---
+
+### Q896: How to optimize React app for memory-constrained environments?
+
+Lazy-load large data, implement pagination, use streams for processing, avoid storing entire datasets, monitor memory usage, and test on low-memory devices.
+
+---
+
+### Q897: What is the cost of derived state in React?
+
+Derived state (computed from props) can lead to stale values. Calculate on render instead or use useMemo. Avoid storing values that can be computed.
+
+---
+
+### Q898: How to implement a resilient feedback/survey collection system in React?
+
+Validate responses, save locally (offline-first), retry sending, handle network failures, provide confirmation, and ensure privacy/security of responses.
+
+---
+
+### Q899: What's the role of React's `children` prop in component design?
+
+`children` enables composition, slot-based layouts, and flexible rendering. Prefer children over render props for simple cases; supports multiple/mixed content types.
+
+---
+
+### Q900: How to plan complete React app migration from legacy code to modern patterns?
+
+Audit existing codebase, prioritize high-impact areas (bottlenecks, frequently changed), incremental migration component-by-component, test thoroughly, document patterns, and train team on new approaches.
+
